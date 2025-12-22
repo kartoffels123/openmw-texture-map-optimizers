@@ -13,7 +13,28 @@ If any of the text below doesn't make sense to you and you just want the game to
 1. **Your normal maps use DirectX-style (G=Y-)**, not OpenGL-style (G=Y+).
    I cannot auto-detect inverted Y - use the checkbox if needed.
 
-2. **You have UNCOMPRESSED normal maps.** If already compressed, then you should ONLY be using this for resizing. You cannot magically uncompress. Use chaiNNer with artifact removal (recommended) and/or upscaling models to restore compressed maps first.
+2. **You have UNCOMPRESSED normal maps.** This tool is designed to compress uncompressed textures.
+
+   **Already using BC3/BC1?** The main thing to avoid is accidentally converting to larger formats when NOT resizing:
+   - BC3 → BGRA: 4x larger files with no quality improvement
+   - BC3 → BC5: Same file size, but artifacts remain (no benefit)
+   - BC3 → BC3: Surprisingly pretty harmless! "double compression" produces nearly identical results (e.g. PSNR ~64 dB, MSE ~0.03)
+
+   **Why does the tool reprocess BC3/BC1 files?** It fixes technical issues:
+   - Regenerates mipmap chains (textures may have bad/missing mipmaps)
+   - Reconstructs Z channels (this is sometimes missing)
+
+   **Valid reasons to process already-compressed textures:**
+   - **Resizing** (downscaling/upscaling) - the main use case
+   - **Fixing broken mipmaps or Z channels** - surprisingly common
+
+   **Want to restore quality from heavily compressed BC3/BC1?** You can't "upgrade" compressed textures by converting formats. Instead:
+   1. Use chaiNNer with artifact removal models to restore detail
+   2. Then use this tool to recompress to your preferred format
+
+   **Note for regular users:** These are edge cases mostly relevant to mod authors. If you just want vastly better performance with very little quality loss, the default settings will work fine.
+
+   Still unsure? Use "Dry Run" to see what will happen before processing. It has a file by file breakdown and statistics at the bottom.
 
 3. **Compression and downsampling are LOSSY** (you lose information). However, 75-95% space savings is nearly always worth it.
 
@@ -50,11 +71,12 @@ The GUI has four tabs:
 - **📖 READ THIS FIRST - Help & Documentation** - Essential information about formats, recommendations, and technical details
 - **⚙️ Settings** - Configure input/output directories, formats, resize options, and processing parameters
 - **▶️ Process Files** - Run dry runs and process your normal maps
-- **📋 Version History** - See current version features and known issues
+- **📋 Version Info** - See current version features and known issues
 
-## Features (Version 0.2)
+## Features (Version 0.3)
 
 - Batch processing of normal maps (`_N.dds` and `_NH.dds`)
+- Preserves nested directory structures
 - Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)
 - Resolution scaling and constraints
 - Z-channel reconstruction for proper normal mapping
@@ -63,9 +85,12 @@ The GUI has four tabs:
 - Dry run analysis with size projections
 - Detailed processing logs and statistics
 - Export analysis reports
+- Parallel processing (multi-core support for faster batch operations)
 
-## Known Issues
+## Technical Notes
 
-- The tool allows converting compressed formats to uncompressed formats if selected. Ideally, compressed inputs without resizing would be copied as-is, but since Z-channel validity cannot be verified without some dependencies (numpy/PIL) + overhead, the tool reprocesses all files. This may cause unnecessary decompression where the output will still look compressed but have a large file size (Very Bad) or introduce double compression artifacts (Varies from Fine to Very Bad). The user HAS been warned about this on the document page. Further the dry run does tell them what conversions are occurring.
-- Future versions will add (optional) format validation to preserve compressed inputs when no resizing occurs IF Z-channel reconstruction is not needed or selected. Should also keep in mind the user may have not generated mipmaps or have created invalid ones.
-- Future versions should make some functions more clear.
+- **Double compression concerns:** Block compression (BC5/BC3/BC1) is deterministic - recompressing the same format (e.g., BC3 → BC3) produces nearly identical results with minimal quality loss (PSNR >60 dB, MSE <0.1). The tool currently reprocesses all files to ensure proper mipmaps and Z-channel reconstruction, which means compressed inputs get recompressed to the same format. This is generally harmless for quality but doesn't reduce file size.
+
+- **Why reprocess everything?** Z-channel validity and mipmap quality cannot be verified without additional dependencies (numpy/PIL), so the tool always regenerates proper mipmaps and reconstructs Z when needed. This ensures technical correctness at the cost of some processing time.
+
+- **Future improvements:** Optional format validation to skip reprocessing when compressed inputs don't need fixes (no resizing, valid mipmaps, correct Z-channel).

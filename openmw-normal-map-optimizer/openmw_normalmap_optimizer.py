@@ -5,6 +5,376 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import webbrowser
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from multiprocessing import cpu_count
+import os
+import sys
+import time
+
+
+# Get the directory where the script is located
+SCRIPT_DIR = Path(__file__).parent if hasattr(sys, 'frozen') else Path(__file__).parent
+TEXDIAG_EXE = str(SCRIPT_DIR / "texdiag.exe")
+TEXCONV_EXE = str(SCRIPT_DIR / "texconv.exe")
+
+
+# Top-level worker function for ProcessPoolExecutor (must be picklable)
+def _process_file_worker(args):
+    """
+    Worker function for parallel processing. Must be at module level for pickling.
+
+    Args:
+        args: Tuple of (dds_file_path, source_dir_path, output_dir_path, is_nh, settings_dict)
+
+    Returns:
+        dict: Processing result with keys: success, relative_path, input_size, output_size,
+              orig_dims, new_dims, orig_format, new_format, error_msg
+    """
+    dds_file_path, source_dir_path, output_dir_path, is_nh, settings = args
+
+    dds_file = Path(dds_file_path)
+    source_dir = Path(source_dir_path)
+    output_dir = Path(output_dir_path)
+
+    relative_path = dds_file.relative_to(source_dir)
+    output_file = output_dir / relative_path
+
+    result = {
+        'success': False,
+        'relative_path': str(relative_path),
+        'input_size': dds_file.stat().st_size,
+        'output_size': 0,
+        'orig_dims': None,
+        'new_dims': None,
+        'orig_format': 'UNKNOWN',
+        'new_format': 'UNKNOWN',
+        'error_msg': None
+    }
+
+    try:
+        # Get original dimensions and format
+        orig_dims = _get_dimensions_static(dds_file)
+        orig_format = _get_format_static(dds_file)
+        result['orig_dims'] = orig_dims
+        result['orig_format'] = orig_format
+
+        if not orig_dims:
+            result['error_msg'] = "Could not determine dimensions"
+            return result
+
+        # Process the file
+        success = _process_normal_map_static(dds_file, output_file, is_nh, settings)
+
+        if success and output_file.exists():
+            result['success'] = True
+            result['output_size'] = output_file.stat().st_size
+            result['new_dims'] = _get_dimensions_static(output_file)
+            result['new_format'] = _get_format_static(output_file)
+        else:
+            result['error_msg'] = "Processing failed or output missing"
+
+    except Exception as e:
+        result['error_msg'] = str(e)
+
+    return result
+
+
+def _get_dimensions_static(input_dds: Path):
+    """Get dimensions from DDS file. Returns (width, height) or None"""
+    try:
+        result = subprocess.run(
+            [TEXDIAG_EXE, "info", str(input_dds)],
+            capture_output=True, text=True, timeout=30
+        )
+
+        width_match = re.search(r'width\s*=\s*(\d+)', result.stdout)
+        height_match = re.search(r'height\s*=\s*(\d+)', result.stdout)
+
+        if width_match and height_match:
+            return int(width_match.group(1)), int(height_match.group(1))
+    except Exception:
+        pass
+
+    return None
+
+
+def _get_format_static(input_dds: Path):
+    """Get format from DDS file. Returns format string or 'UNKNOWN'"""
+    try:
+        result = subprocess.run(
+            [TEXDIAG_EXE, "info", str(input_dds)],
+            capture_output=True, text=True, timeout=30
+        )
+
+        format_match = re.search(r'format\s*=\s*(\S+)', result.stdout)
+        if format_match:
+            return format_match.group(1)
+    except Exception:
+        pass
+
+    return "UNKNOWN"
+
+
+def _process_normal_map_static(input_dds: Path, output_dds: Path, is_nh: bool, settings: dict) -> bool:
+    """
+    Process a single normal map file using texconv's built-in features.
+    Static version for multiprocessing.
+    """
+    FORMAT_MAP = {
+        "BC5/ATI2": "BC5_UNORM",
+        "BC1/DXT1": "BC1_UNORM",
+        "BC3/DXT5": "BC3_UNORM",
+        "BGRA": "B8G8R8A8_UNORM",
+        "BGR": "B8G8R8X8_UNORM"
+    }
+
+    FILTER_MAP = {
+        "FANT": "FANT",
+        "CUBIC": "CUBIC",
+        "BOX": "BOX",
+        "LINEAR": "LINEAR"
+    }
+
+    try:
+        output_dds.parent.mkdir(parents=True, exist_ok=True)
+
+        # Get dimensions and calculate resize
+        dimensions = _get_dimensions_static(input_dds)
+        if not dimensions:
+            return False
+
+        orig_width, orig_height = dimensions
+
+        # Calculate new dimensions (from settings)
+        new_width, new_height = orig_width, orig_height
+
+        scale = settings['scale_factor']
+        if scale != 1.0:
+            new_width = int(orig_width * scale)
+            new_height = int(orig_height * scale)
+
+        max_res = settings['max_resolution']
+        if max_res > 0:
+            max_dim = max(new_width, new_height)
+            if max_dim > max_res:
+                scale_factor = max_res / max_dim
+                new_width = int(new_width * scale_factor)
+                new_height = int(new_height * scale_factor)
+
+        min_res = settings['min_resolution']
+        if min_res > 0 and scale < 1.0:
+            min_dim = min(new_width, new_height)
+            if min_dim < min_res:
+                scale_factor = min_res / min_dim
+                new_width = int(new_width * scale_factor)
+                new_height = int(new_height * scale_factor)
+
+        # Determine target format (with small texture override)
+        target_format = settings['nh_format'] if is_nh else settings['n_format']
+
+        if settings['use_small_texture_override']:
+            min_dim = min(new_width, new_height)
+            if is_nh:
+                threshold = settings['small_nh_threshold']
+                if threshold > 0 and min_dim <= threshold:
+                    target_format = "BGRA"
+            else:
+                threshold = settings['small_n_threshold']
+                if threshold > 0 and min_dim <= threshold:
+                    target_format = "BGR"
+
+        texconv_format = FORMAT_MAP[target_format]
+
+        # Build texconv command
+        cmd = [
+            TEXCONV_EXE,
+            "-f", texconv_format,
+            "-m", "0",  # Generate mipmaps
+            "-alpha",   # Linear alpha
+            "-dx9"      # DX9 compatibility
+        ]
+
+        if settings['invert_y']:
+            cmd.append("-inverty")
+
+        if target_format != "BC5/ATI2" and settings['reconstruct_z']:
+            cmd.append("-reconstructz")
+
+        if target_format in ["BC1/DXT1", "BC3/DXT5"]:
+            bc_options = ""
+            if settings['uniform_weighting']:
+                bc_options += "u"
+            if settings['use_dithering']:
+                bc_options += "d"
+            if bc_options:
+                cmd.extend(["-bc", bc_options])
+
+        if new_width != orig_width or new_height != orig_height:
+            cmd.extend(["-w", str(new_width), "-h", str(new_height)])
+
+            resize_method = settings['resize_method'].split()[0]
+            if resize_method in FILTER_MAP:
+                cmd.extend(["-if", FILTER_MAP[resize_method]])
+
+        cmd.extend(["-o", str(output_dds.parent), "-y", str(input_dds)])
+
+        # Execute texconv
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+        if result.returncode != 0:
+            return False
+
+        # Rename output file if needed
+        generated_dds = output_dds.parent / input_dds.name
+        if generated_dds != output_dds:
+            if output_dds.exists():
+                output_dds.unlink()
+            generated_dds.rename(output_dds)
+
+        return True
+
+    except Exception:
+        return False
+
+
+def _create_file_chunks(files_with_sizes, chunk_size_bytes):
+    """
+    Create chunks of files based on total size.
+
+    Args:
+        files_with_sizes: List of tuples (file_path, file_size)
+        chunk_size_bytes: Target chunk size in bytes
+
+    Returns:
+        List of chunks, where each chunk is a list of file paths
+    """
+    chunks = []
+    current_chunk = []
+    current_size = 0
+
+    for file_path, file_size in files_with_sizes:
+        # If adding this file would exceed chunk size and we have files, start new chunk
+        if current_size + file_size > chunk_size_bytes and current_chunk:
+            chunks.append(current_chunk)
+            current_chunk = []
+            current_size = 0
+
+        current_chunk.append(file_path)
+        current_size += file_size
+
+    # Add remaining files
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    return chunks
+
+
+def _analyze_file_worker(args):
+    """
+    Worker function for parallel analysis. Must be at module level for pickling.
+
+    Args:
+        args: Tuple of (dds_file_path, source_dir_path, settings_dict)
+
+    Returns:
+        dict: Analysis result with file info
+    """
+    dds_file_path, source_dir_path, settings = args
+
+    dds_file = Path(dds_file_path)
+    source_dir = Path(source_dir_path)
+    relative_path = dds_file.relative_to(source_dir)
+    file_size = dds_file.stat().st_size
+    is_nh = dds_file.stem.lower().endswith('_nh')
+
+    result = {
+        'relative_path': str(relative_path),
+        'file_size': file_size,
+        'is_nh': is_nh,
+        'width': None,
+        'height': None,
+        'format': 'UNKNOWN',
+        'new_width': None,
+        'new_height': None,
+        'target_format': None,
+        'projected_size': 0,
+        'error': None
+    }
+
+    try:
+        # Get file info
+        dimensions = _get_dimensions_static(dds_file)
+        format_name = _get_format_static(dds_file)
+
+        if not dimensions:
+            result['error'] = "Could not determine dimensions"
+            return result
+
+        width, height = dimensions
+        result['width'] = width
+        result['height'] = height
+        result['format'] = format_name
+
+        # Calculate new dimensions
+        new_width, new_height = width, height
+
+        scale = settings['scale_factor']
+        if scale != 1.0:
+            new_width = int(width * scale)
+            new_height = int(height * scale)
+
+        max_res = settings['max_resolution']
+        if max_res > 0:
+            max_dim = max(new_width, new_height)
+            if max_dim > max_res:
+                scale_factor = max_res / max_dim
+                new_width = int(new_width * scale_factor)
+                new_height = int(new_height * scale_factor)
+
+        min_res = settings['min_resolution']
+        if min_res > 0 and scale < 1.0:
+            min_dim = min(new_width, new_height)
+            if min_dim < min_res:
+                scale_factor = min_res / min_dim
+                new_width = int(new_width * scale_factor)
+                new_height = int(new_height * scale_factor)
+
+        result['new_width'] = new_width
+        result['new_height'] = new_height
+
+        # Determine target format
+        target_format = settings['nh_format'] if is_nh else settings['n_format']
+
+        if settings['use_small_texture_override']:
+            min_dim_output = min(new_width, new_height)
+            if is_nh:
+                threshold = settings['small_nh_threshold']
+                if threshold > 0 and min_dim_output <= threshold:
+                    target_format = "BGRA"
+            else:
+                threshold = settings['small_n_threshold']
+                if threshold > 0 and min_dim_output <= threshold:
+                    target_format = "BGR"
+
+        result['target_format'] = target_format
+
+        # Estimate output size
+        num_pixels = new_width * new_height * 1.33
+        bpp_map = {
+            "BC5/ATI2": 8,
+            "BC3/DXT5": 8,
+            "BC1/DXT1": 4,
+            "BGRA": 32,
+            "BGR": 24
+        }
+        bpp = bpp_map.get(target_format, 32)
+        total_bytes = int((num_pixels * bpp) / 8)
+        result['projected_size'] = total_bytes + 128
+
+    except Exception as e:
+        result['error'] = str(e)
+
+    return result
 
 
 class NormalMapProcessorGUI:
@@ -52,6 +422,11 @@ class NormalMapProcessorGUI:
         self.small_nh_threshold = tk.IntVar(value=256)  # _NH textures <= this use BGRA
         self.small_n_threshold = tk.IntVar(value=128)   # _N textures <= this use BGR
 
+        # Parallel processing settings
+        self.enable_parallel = tk.BooleanVar(value=True)
+        self.max_workers = tk.IntVar(value=max(1, cpu_count() - 1))
+        self.chunk_size_mb = tk.IntVar(value=75)  # MB total per chunk
+
         self.processing = False
         self.total_input_size = 0
         self.total_output_size = 0
@@ -70,7 +445,7 @@ class NormalMapProcessorGUI:
         notebook.add(tab_help, text="📖 READ THIS FIRST - Help & Documentation")
         notebook.add(tab_settings, text="⚙️ Settings")
         notebook.add(tab_process, text="▶️ Process Files")
-        notebook.add(tab_version, text="📋 Version History")
+        notebook.add(tab_version, text="📋 Version Info")
 
         self._create_help_tab(tab_help)
         self._create_settings_tab(tab_settings)
@@ -79,8 +454,12 @@ class NormalMapProcessorGUI:
 
     def _create_help_tab(self, tab_help):
         """Create the help/documentation tab with scrollable content"""
-        canvas_help = tk.Canvas(tab_help)
-        scrollbar_help = ttk.Scrollbar(tab_help, orient="vertical", command=canvas_help.yview)
+        # Create main container
+        main_container = ttk.Frame(tab_help)
+        main_container.pack(fill="both", expand=True)
+
+        canvas_help = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar_help = ttk.Scrollbar(main_container, orient="vertical", command=canvas_help.yview)
         scrollable_help = ttk.Frame(canvas_help)
 
         scrollable_help.bind(
@@ -93,6 +472,17 @@ class NormalMapProcessorGUI:
 
         canvas_help.pack(side="left", fill="both", expand=True)
         scrollbar_help.pack(side="right", fill="y")
+
+        # Add scroll indicator at bottom
+        scroll_hint = ttk.Label(tab_help, text="⬇ Scroll down for more options ⬇",
+                               font=("", 9, "bold"), foreground="blue",
+                               background="#f0f0f0", anchor="center")
+        scroll_hint.pack(side="bottom", fill="x", pady=2)
+
+        # Bind mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas_help.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_help.bind_all("<MouseWheel>", _on_mousewheel)
 
         # About section
         frame_info = ttk.LabelFrame(scrollable_help, text="About", padding=10)
@@ -108,10 +498,29 @@ class NormalMapProcessorGUI:
             "IMPORTANT ASSUMPTIONS:\n"
             "1. Your normal maps use DirectX-style (G=Y-), Not OpenGL-style (G=Y+).\n"
             "   I cannot auto-detect inverted Y - use the checkbox if needed.\n\n"
-            "2. You have UNCOMPRESSED normal maps. If already compressed, then you should\n"
-            "   ONLY be using this for resizing. You cannot magically uncompress. Use\n"
-            "   chaiNNer with artifact removal (recommended) and/or upscaling models to\n"
-            "   restore compressed maps first (see links below).\n\n"
+            "2. You have UNCOMPRESSED normal maps. This tool is designed to compress\n"
+            "   uncompressed textures.\n\n"
+            "   Already using BC3/BC1? The main thing to avoid is accidentally converting\n"
+            "   to larger formats when NOT resizing:\n"
+            "   • BC3 → BGRA: 4x larger files with no quality improvement\n"
+            "   • BC3 → BC5: Same file size, but artifacts remain (no benefit)\n"
+            "   • BC3 → BC3: Surprisingly pretty harmless! \"double compression\" produces\n"
+            "     nearly identical results (e.g. PSNR ~64 dB, MSE ~0.03)\n\n"
+            "   Why does the tool reprocess BC3/BC1 files? It fixes technical issues:\n"
+            "   • Regenerates mipmap chains (textures may have bad/missing mipmaps)\n"
+            "   • Reconstructs Z channels (this is sometimes missing)\n\n"
+            "   Valid reasons to process already-compressed textures:\n"
+            "   • Resizing (downscaling/upscaling) - the main use case\n"
+            "   • Fixing broken mipmaps or Z channels - surprisingly common\n\n"
+            "   Want to restore quality from heavily compressed BC3/BC1? You can't \"upgrade\"\n"
+            "   compressed textures by converting formats. Instead:\n"
+            "   1. Use chaiNNer with artifact removal models to restore detail\n"
+            "   2. Then use this tool to recompress to your preferred format\n\n"
+            "   Note for regular users: These are edge cases mostly relevant to mod authors.\n"
+            "   If you just want vastly better performance with very little quality loss,\n"
+            "   the default settings will work fine.\n\n"
+            "   Still unsure? Use \"Dry Run\" to see what will happen before processing.\n"
+            "   It has a file by file breakdown and statistics at the bottom.\n\n"
             "3. Compression and downsampling are LOSSY (you lose information). However,\n"
             "   75-95% space savings is nearly always worth it.\n\n"
             "4. Z-channel reconstruction: Many normal map generators output 2-channel\n"
@@ -201,9 +610,13 @@ class NormalMapProcessorGUI:
 
     def _create_settings_tab(self, tab_settings):
         """Create the settings tab with all configuration options"""
+        # Create main container
+        main_container = ttk.Frame(tab_settings)
+        main_container.pack(fill="both", expand=True)
+
         # Create scrollable frame for settings
-        canvas_settings = tk.Canvas(tab_settings)
-        scrollbar_settings = ttk.Scrollbar(tab_settings, orient="vertical", command=canvas_settings.yview)
+        canvas_settings = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar_settings = ttk.Scrollbar(main_container, orient="vertical", command=canvas_settings.yview)
         scrollable_settings = ttk.Frame(canvas_settings)
 
         scrollable_settings.bind(
@@ -216,6 +629,17 @@ class NormalMapProcessorGUI:
 
         canvas_settings.pack(side="left", fill="both", expand=True)
         scrollbar_settings.pack(side="right", fill="y")
+
+        # Add scroll indicator at bottom
+        scroll_hint = ttk.Label(tab_settings, text="⬇ Scroll down for more options ⬇",
+                               font=("", 9, "bold"), foreground="blue",
+                               background="#f0f0f0", anchor="center")
+        scroll_hint.pack(side="bottom", fill="x", pady=2)
+
+        # Bind mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas_settings.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_settings.bind_all("<MouseWheel>", _on_mousewheel)
 
         # Directory Info
         frame_dir_info = ttk.LabelFrame(scrollable_settings, text="⚠ Important: Directory Structure", padding=10)
@@ -360,6 +784,39 @@ class NormalMapProcessorGUI:
                  text="⚠ Note: Thresholds are checked AFTER resizing. Set to 0 to disable override for that type.",
                  font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
+        # Parallel Processing Settings
+        frame_parallel = ttk.LabelFrame(scrollable_settings, text="Parallel Processing", padding=10)
+        frame_parallel.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_parallel, text="Enable parallel processing (recommended for speedy processing.)",
+                       variable=self.enable_parallel).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_parallel,
+                 text=f"Parallel processing uses multiple CPU cores to process files simultaneously. Detected: {cpu_count()} cores",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_parallel, text="Max workers:").grid(row=2, column=0, sticky="w", pady=5, padx=(20, 0))
+        workers_combo = ttk.Combobox(frame_parallel, textvariable=self.max_workers,
+                                     values=list(range(1, cpu_count() + 1)), state="readonly", width=15)
+        workers_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_parallel, text=f"(CPU cores to use, recommended: {max(1, cpu_count() - 1)})",
+                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
+
+        ttk.Label(frame_parallel, text="Chunk size (MB):").grid(row=3, column=0, sticky="w", pady=5, padx=(20, 0))
+        chunk_combo = ttk.Combobox(frame_parallel, textvariable=self.chunk_size_mb,
+                                   values=[25, 50, 75, 100, 150, 200], state="readonly", width=15)
+        chunk_combo.grid(row=3, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_parallel, text="(Total filesize per batch, recommended: 50-100MB)",
+                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w")
+
+        ttk.Label(frame_parallel,
+                 text="⚠ Chunking groups files by total size to balance I/O and CPU usage across workers.\n"
+                      "Larger chunks = fewer context switches, but less granular progress.\n"
+                      "Smaller chunks = more responsive progress, but more overhead.\n\n"
+                      "If your computer becomes unresponsive, lower the CPU cores used or make the chunks smaller.\n"
+                      "This is pretty unlikely though. It's worth making 15 minutes of processing take only 15 seconds.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
+
     def _create_process_tab(self, tab_process):
         """Create the processing tab with progress log and controls"""
         # Progress Bar
@@ -400,8 +857,12 @@ class NormalMapProcessorGUI:
 
     def _create_version_tab(self, tab_version):
         """Create the version history tab"""
-        canvas_version = tk.Canvas(tab_version)
-        scrollbar_version = ttk.Scrollbar(tab_version, orient="vertical", command=canvas_version.yview)
+        # Create main container
+        main_container = ttk.Frame(tab_version)
+        main_container.pack(fill="both", expand=True)
+
+        canvas_version = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar_version = ttk.Scrollbar(main_container, orient="vertical", command=canvas_version.yview)
         scrollable_version = ttk.Frame(canvas_version)
 
         scrollable_version.bind(
@@ -415,12 +876,23 @@ class NormalMapProcessorGUI:
         canvas_version.pack(side="left", fill="both", expand=True)
         scrollbar_version.pack(side="right", fill="y")
 
-        # Version History
+        # Add scroll indicator at bottom
+        scroll_hint = ttk.Label(tab_version, text="⬇ Scroll down for more ⬇",
+                               font=("", 9, "bold"), foreground="blue",
+                               background="#f0f0f0", anchor="center")
+        scroll_hint.pack(side="bottom", fill="x", pady=2)
+
+        # Bind mousewheel scrolling
+        def _on_mousewheel(event):
+            canvas_version.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_version.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Version Info
         frame_version = ttk.LabelFrame(scrollable_version, text="Version Features", padding=10)
         frame_version.pack(fill="x", padx=10, pady=5)
 
         version_text = (
-            "Version 0.2\n"
+            "Version 0.3\n"
             "Features:\n"
             "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
             "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
@@ -430,7 +902,8 @@ class NormalMapProcessorGUI:
             "  • Smart small texture handling\n"
             "  • Dry run analysis with size projections\n"
             "  • Detailed processing logs and statistics\n"
-            "  • Export analysis reports\n\n"
+            "  • Export analysis reports\n"
+            "  • Parallel processing (multi-core support for faster batch operations)\n\n"
             "Known Issues:\n"
             "  • The tool allows converting compressed formats to uncompressed formats if\n"
             "    selected. Ideally, compressed inputs without resizing would be copied as-is,\n"
@@ -535,6 +1008,7 @@ class NormalMapProcessorGUI:
         threading.Thread(target=self.process_files, daemon=True).start()
 
     def process_files(self):
+        start_time = time.time()
         try:
             source_dir = Path(self.input_dir.get())
             output_dir = Path(self.output_dir.get())
@@ -551,26 +1025,38 @@ class NormalMapProcessorGUI:
             # Initialize progress bar
             self.progress_bar["maximum"] = total_files
             self.progress_bar["value"] = 0
-            current_file = 0
 
             # Track processing results
             self.processed_count = 0
             self.failed_count = 0
 
-            for dds_file in n_files:
-                current_file += 1
-                self.progress_label.config(text=f"Processing file {current_file} of {total_files}: {dds_file.name}")
-                self.progress_bar["value"] = current_file
-                self._process_single_file(dds_file, source_dir, output_dir, is_nh=False)
+            # Prepare settings dict for worker processes
+            settings = {
+                'n_format': self.n_format.get(),
+                'nh_format': self.nh_format.get(),
+                'scale_factor': self.scale_factor.get(),
+                'max_resolution': self.max_resolution.get(),
+                'min_resolution': self.min_resolution.get(),
+                'invert_y': self.invert_y.get(),
+                'reconstruct_z': self.reconstruct_z.get(),
+                'uniform_weighting': self.uniform_weighting.get(),
+                'use_dithering': self.use_dithering.get(),
+                'use_small_texture_override': self.use_small_texture_override.get(),
+                'small_nh_threshold': self.small_nh_threshold.get(),
+                'small_n_threshold': self.small_n_threshold.get(),
+                'resize_method': self.resize_method.get()
+            }
 
-            for dds_file in nh_files:
-                current_file += 1
-                self.progress_label.config(text=f"Processing file {current_file} of {total_files}: {dds_file.name}")
-                self.progress_bar["value"] = current_file
-                self._process_single_file(dds_file, source_dir, output_dir, is_nh=True)
+            # Check if parallel processing is enabled
+            if self.enable_parallel.get() and total_files > 1:
+                self._process_files_parallel(n_files, nh_files, source_dir, output_dir, settings, total_files)
+            else:
+                self._process_files_sequential(n_files, nh_files, source_dir, output_dir, total_files)
 
             self.progress_label.config(text="Processing complete!")
-            self._display_final_stats()
+
+            elapsed_time = time.time() - start_time
+            self._display_final_stats(elapsed_time)
 
         except Exception as e:
             self.log(f"\nError: {str(e)}")
@@ -579,6 +1065,99 @@ class NormalMapProcessorGUI:
             self.processing = False
             self.analyze_btn.configure(state="normal")
             self.process_btn.configure(state="normal")
+
+    def _process_files_parallel(self, n_files, nh_files, source_dir, output_dir, settings, total_files):
+        """Process files in parallel using ProcessPoolExecutor"""
+        max_workers = self.max_workers.get()
+        chunk_size_bytes = self.chunk_size_mb.get() * 1024 * 1024  # Convert MB to bytes
+
+        self.log(f"Using parallel processing: {max_workers} workers, {self.chunk_size_mb.get()}MB chunks\n")
+
+        # Prepare all files with their sizes and metadata
+        all_tasks = []
+        for f in n_files:
+            all_tasks.append((str(f), str(source_dir), str(output_dir), False, settings, f.stat().st_size))
+        for f in nh_files:
+            all_tasks.append((str(f), str(source_dir), str(output_dir), True, settings, f.stat().st_size))
+
+        # Create chunks based on file size
+        files_with_sizes = [(task[0], task[5]) for task in all_tasks]
+        chunks = _create_file_chunks(files_with_sizes, chunk_size_bytes)
+
+        self.log(f"Created {len(chunks)} chunks from {total_files} files\n")
+
+        current_file = 0
+
+        # Process chunks in parallel
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_file = {}
+            for task in all_tasks:
+                # task format: (file_path, source_dir, output_dir, is_nh, settings, file_size)
+                # worker needs: (file_path, source_dir, output_dir, is_nh, settings)
+                worker_args = task[:5]
+                future = executor.submit(_process_file_worker, worker_args)
+                future_to_file[future] = task[0]  # Store file path for logging
+
+            # Process results as they complete
+            for future in as_completed(future_to_file):
+                file_path = future_to_file[future]
+                current_file += 1
+
+                try:
+                    result = future.result()
+                    self._handle_processing_result(result)
+
+                    # Update progress
+                    self.progress_bar["value"] = current_file
+                    self.progress_label.config(text=f"Processed {current_file}/{total_files} files")
+                    self.root.update_idletasks()
+
+                except Exception as e:
+                    self.log(f"✗ Exception processing {Path(file_path).name}: {str(e)}")
+                    self.failed_count += 1
+
+    def _process_files_sequential(self, n_files, nh_files, source_dir, output_dir, total_files):
+        """Process files sequentially (fallback or single file)"""
+        self.log("Using sequential processing\n")
+        current_file = 0
+
+        for dds_file in n_files:
+            current_file += 1
+            self.progress_label.config(text=f"Processing file {current_file} of {total_files}: {dds_file.name}")
+            self.progress_bar["value"] = current_file
+            self._process_single_file(dds_file, source_dir, output_dir, is_nh=False)
+
+        for dds_file in nh_files:
+            current_file += 1
+            self.progress_label.config(text=f"Processing file {current_file} of {total_files}: {dds_file.name}")
+            self.progress_bar["value"] = current_file
+            self._process_single_file(dds_file, source_dir, output_dir, is_nh=True)
+
+    def _handle_processing_result(self, result):
+        """Handle a processing result from the worker"""
+        self.total_input_size += result['input_size']
+
+        if result['success']:
+            self.total_output_size += result['output_size']
+            self.processed_count += 1
+
+            # Log detailed info
+            if result['orig_dims'] and result['new_dims']:
+                orig_w, orig_h = result['orig_dims']
+                new_w, new_h = result['new_dims']
+                size_change = result['output_size'] - result['input_size']
+                size_change_str = f"+{self.format_size(size_change)}" if size_change > 0 else self.format_size(size_change)
+
+                self.log(f"✓ {result['relative_path']}")
+                self.log(f"  {orig_w}×{orig_h} {result['orig_format']} → {new_w}×{new_h} {result['new_format']} | "
+                        f"{self.format_size(result['input_size'])} → {self.format_size(result['output_size'])} ({size_change_str})")
+            else:
+                self.log(f"✓ Completed: {result['relative_path']}")
+        else:
+            self.failed_count += 1
+            error_msg = result.get('error_msg', 'Unknown error')
+            self.log(f"✗ Failed: {result['relative_path']} - {error_msg}")
 
     def _process_single_file(self, dds_file, source_dir, output_dir, is_nh):
         """Process a single DDS file"""
@@ -622,7 +1201,7 @@ class NormalMapProcessorGUI:
             self.log(f"✗ Failed: {relative_path}")
             self.failed_count += 1
 
-    def _display_final_stats(self):
+    def _display_final_stats(self, elapsed_time=None):
         """Calculate and display final processing statistics"""
         total_files = self.processed_count + self.failed_count
         savings = self.total_input_size - self.total_output_size
@@ -641,6 +1220,13 @@ class NormalMapProcessorGUI:
         self.log(f"Failed: {self.failed_count}")
         self.log(f"Space savings: {savings_str} ({savings_percent:.1f}%)")
 
+        if elapsed_time is not None:
+            time_str = self._format_time(elapsed_time)
+            self.log(f"Time taken: {time_str}")
+            if total_files > 0:
+                avg_time = elapsed_time / total_files
+                self.log(f"Average per file: {self._format_time(avg_time)}")
+
         if self.failed_count > 0:
             messagebox.showwarning("Completed with errors", f"Processing completed with {self.failed_count} failed file(s)\n\n{stats_msg}")
         else:
@@ -648,6 +1234,7 @@ class NormalMapProcessorGUI:
 
     def analyze_files(self):
         """Analyze normal map files and report statistics with size projection"""
+        start_time = time.time()
         try:
             source_dir = Path(self.input_dir.get())
 
@@ -682,84 +1269,78 @@ class NormalMapProcessorGUI:
                 'no_change': []
             }
 
-            # Get current settings for projection
-            n_target_format = self.n_format.get()
-            nh_target_format = self.nh_format.get()
+            # Prepare settings for workers
+            settings = {
+                'n_format': self.n_format.get(),
+                'nh_format': self.nh_format.get(),
+                'scale_factor': self.scale_factor.get(),
+                'max_resolution': self.max_resolution.get(),
+                'min_resolution': self.min_resolution.get(),
+                'use_small_texture_override': self.use_small_texture_override.get(),
+                'small_nh_threshold': self.small_nh_threshold.get(),
+                'small_n_threshold': self.small_n_threshold.get()
+            }
 
-            for i, dds_file in enumerate(all_files, 1):
-                relative_path = dds_file.relative_to(source_dir)
-                file_size = dds_file.stat().st_size
+            # Use parallel processing for analysis if enabled
+            if self.enable_parallel.get() and len(all_files) > 1:
+                self.log(f"Using parallel analysis: {self.max_workers.get()} workers\n")
+                results = self._analyze_files_parallel(all_files, source_dir, settings)
+            else:
+                self.log("Using sequential analysis\n")
+                results = self._analyze_files_sequential(all_files, source_dir, settings)
+
+            # Process results
+            for i, result in enumerate(results, 1):
+                if result['error']:
+                    self.log(f"[{i}/{len(all_files)}] Error analyzing {result['relative_path']}: {result['error']}")
+                    continue
+
+                relative_path = result['relative_path']
+                file_size = result['file_size']
                 total_current_size += file_size
-
-                is_nh = dds_file.stem.lower().endswith('_nh')
 
                 self.log(f"[{i}/{len(all_files)}] Analyzing: {relative_path}")
 
-                # Use texdiag to get info without creating temp files
-                result = subprocess.run(
-                    ["texdiag.exe", "info", str(dds_file)],
-                    capture_output=True, text=True
-                )
+                width = result['width']
+                height = result['height']
+                format_name = result['format']
+                new_width = result['new_width']
+                new_height = result['new_height']
+                target_format = result['target_format']
+                projected_size = result['projected_size']
+                total_projected_size += projected_size
 
-                # Parse texdiag output
-                width_match = re.search(r'width\s*=\s*(\d+)', result.stdout)
-                height_match = re.search(r'height\s*=\s*(\d+)', result.stdout)
-                format_match = re.search(r'format\s*=\s*(\S+)', result.stdout)
+                # Update format stats
+                if format_name not in format_stats:
+                    format_stats[format_name] = {'count': 0, 'size': 0, 'files': []}
+                format_stats[format_name]['count'] += 1
+                format_stats[format_name]['size'] += file_size
+                format_stats[format_name]['files'].append(str(relative_path))
 
-                if width_match and height_match and format_match:
-                    width = int(width_match.group(1))
-                    height = int(height_match.group(1))
-                    format_name = format_match.group(1)
+                # Check for size warnings
+                max_dim = max(width, height)
+                min_dim = min(width, height)
 
-                    if format_name not in format_stats:
-                        format_stats[format_name] = {'count': 0, 'size': 0, 'files': []}
-                    format_stats[format_name]['count'] += 1
-                    format_stats[format_name]['size'] += file_size
-                    format_stats[format_name]['files'].append(str(relative_path))
+                if max_dim > 2048:
+                    oversized_textures.append((relative_path, width, height))
+                if min_dim < 256:
+                    undersized_textures.append((relative_path, width, height))
 
-                    # Check for size warnings
-                    max_dim = max(width, height)
-                    min_dim = min(width, height)
+                # Categorize action
+                will_resize = (new_width != width) or (new_height != height)
+                will_reformat = format_name != target_format
 
-                    if max_dim > 2048:
-                        oversized_textures.append((relative_path, width, height))
-                    if min_dim < 256:
-                        undersized_textures.append((relative_path, width, height))
+                if will_resize and will_reformat:
+                    action_groups['resize_and_reformat'].append((relative_path, width, height, format_name, new_width, new_height, target_format))
+                elif will_resize:
+                    action_groups['resize_only'].append((relative_path, width, height, format_name, new_width, new_height))
+                elif will_reformat:
+                    action_groups['reformat_only'].append((relative_path, width, height, format_name, target_format))
+                else:
+                    action_groups['no_change'].append((relative_path, width, height, format_name))
 
-                    # Calculate projected size with current settings
-                    new_width, new_height = self._calculate_new_dimensions(width, height)
-                    target_format = nh_target_format if is_nh else n_target_format
-
-                    # Apply small texture override (same logic as process_normal_map)
-                    if self.use_small_texture_override.get():
-                        min_dim_output = min(new_width, new_height)
-                        if is_nh:
-                            threshold = self.small_nh_threshold.get()
-                            if threshold > 0 and min_dim_output <= threshold:
-                                target_format = "BGRA"
-                        else:
-                            threshold = self.small_n_threshold.get()
-                            if threshold > 0 and min_dim_output <= threshold:
-                                target_format = "BGR"
-
-                    projected_size = self._estimate_output_size(new_width, new_height, target_format)
-                    total_projected_size += projected_size
-
-                    # Categorize action
-                    will_resize = (new_width != width) or (new_height != height)
-                    will_reformat = format_name != target_format
-
-                    if will_resize and will_reformat:
-                        action_groups['resize_and_reformat'].append((relative_path, width, height, format_name, new_width, new_height, target_format))
-                    elif will_resize:
-                        action_groups['resize_only'].append((relative_path, width, height, format_name, new_width, new_height))
-                    elif will_reformat:
-                        action_groups['reformat_only'].append((relative_path, width, height, format_name, target_format))
-                    else:
-                        action_groups['no_change'].append((relative_path, width, height, format_name))
-
-                    self.log(f"  Current: {format_name}, {width}x{height}, {self.format_size(file_size)}")
-                    self.log(f"  Projected: {target_format}, {new_width}x{new_height}, {self.format_size(projected_size)}")
+                self.log(f"  Current: {format_name}, {width}x{height}, {self.format_size(file_size)}")
+                self.log(f"  Projected: {target_format}, {new_width}x{new_height}, {self.format_size(projected_size)}")
 
             self.log("\n=== Current State ===")
             self.log(f"Total size: {self.format_size(total_current_size)}")
@@ -831,7 +1412,13 @@ class NormalMapProcessorGUI:
                 text=f"Current: {self.format_size(total_current_size)} → Projected: {self.format_size(total_projected_size)} ({savings_percent:.1f}% savings)"
             )
 
+            elapsed_time = time.time() - start_time
             self.log("\n=== Dry Run Complete ===")
+            self.log(f"Time taken: {self._format_time(elapsed_time)}")
+            if len(all_files) > 0:
+                avg_time = elapsed_time / len(all_files)
+                self.log(f"Average per file: {self._format_time(avg_time)}")
+
             messagebox.showinfo("Dry Run Complete",
                 f"Current: {self.format_size(total_current_size)}\n"
                 f"Projected: {self.format_size(total_projected_size)}\n"
@@ -846,6 +1433,41 @@ class NormalMapProcessorGUI:
             self.process_btn.configure(state="normal")
             self.export_btn.configure(state="normal")
 
+    def _analyze_files_parallel(self, all_files, source_dir, settings):
+        """Analyze files in parallel using ProcessPoolExecutor"""
+        max_workers = self.max_workers.get()
+        results = []
+
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks
+            future_to_file = {}
+            for f in all_files:
+                future = executor.submit(_analyze_file_worker, (str(f), str(source_dir), settings))
+                future_to_file[future] = f
+
+            # Collect results as they complete
+            for future in as_completed(future_to_file):
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    file_path = future_to_file[future]
+                    results.append({
+                        'relative_path': str(file_path.relative_to(source_dir)),
+                        'file_size': 0,
+                        'error': str(e)
+                    })
+
+        return results
+
+    def _analyze_files_sequential(self, all_files, source_dir, settings):
+        """Analyze files sequentially (fallback)"""
+        results = []
+        for f in all_files:
+            result = _analyze_file_worker((str(f), str(source_dir), settings))
+            results.append(result)
+        return results
+
     def format_size(self, bytes_size):
         """Format file size in human-readable format"""
         for unit in ['B', 'KB', 'MB', 'GB']:
@@ -854,10 +1476,24 @@ class NormalMapProcessorGUI:
             bytes_size /= 1024.0
         return f"{bytes_size:.2f} TB"
 
+    def _format_time(self, seconds):
+        """Format time in human-readable format"""
+        if seconds < 60:
+            return f"{seconds:.2f}s"
+        elif seconds < 3600:
+            minutes = int(seconds // 60)
+            secs = seconds % 60
+            return f"{minutes}m {secs:.1f}s"
+        else:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            secs = seconds % 60
+            return f"{hours}h {minutes}m {secs:.0f}s"
+
     def _get_dimensions(self, input_dds: Path):
         """Get dimensions from DDS file. Returns (width, height) or None"""
         result = subprocess.run(
-            ["texdiag.exe", "info", str(input_dds)],
+            [TEXDIAG_EXE, "info", str(input_dds)],
             capture_output=True, text=True
         )
 
@@ -874,7 +1510,7 @@ class NormalMapProcessorGUI:
     def _get_format(self, input_dds: Path):
         """Get format from DDS file. Returns format string or 'UNKNOWN'"""
         result = subprocess.run(
-            ["texdiag.exe", "info", str(input_dds)],
+            [TEXDIAG_EXE, "info", str(input_dds)],
             capture_output=True, text=True
         )
 
@@ -967,7 +1603,7 @@ class NormalMapProcessorGUI:
 
         # Build texconv command
         cmd = [
-            "texconv.exe",
+            TEXCONV_EXE,
             "-f", texconv_format,
             "-m", "0",  # Generate mipmaps
             "-alpha",   # Linear alpha
