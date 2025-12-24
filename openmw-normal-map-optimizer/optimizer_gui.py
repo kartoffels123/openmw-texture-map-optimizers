@@ -1,0 +1,932 @@
+"""
+GUI layer for OpenMW Normal Map Optimizer.
+Handles all tkinter UI logic, delegates processing to optimizer_core.
+"""
+
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import threading
+import webbrowser
+import time
+from pathlib import Path
+from multiprocessing import cpu_count
+
+from optimizer_core import (
+    NormalMapProcessor,
+    ProcessingSettings,
+    ProcessingResult,
+    AnalysisResult,
+    format_size,
+    format_time
+)
+
+
+class NormalMapProcessorGUI:
+    """GUI for Normal Map Processor"""
+
+    WINDOW_WIDTH = 850
+    WINDOW_HEIGHT = 1200
+    WRAPLENGTH = 700
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Normal Map Processor")
+        self.root.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
+
+        # UI Variables
+        self.input_dir = tk.StringVar()
+        self.output_dir = tk.StringVar()
+        self.n_format = tk.StringVar(value="BC5/ATI2")
+        self.nh_format = tk.StringVar(value="BC3/DXT5")
+        self.resize_method = tk.StringVar(value="CUBIC (Recommended - smooth surfaces + detail)")
+        self.scale_factor = tk.DoubleVar(value=1.0)
+        self.max_resolution = tk.IntVar(value=2048)
+        self.min_resolution = tk.IntVar(value=256)
+        self.invert_y = tk.BooleanVar(value=False)
+        self.reconstruct_z = tk.BooleanVar(value=True)
+        self.uniform_weighting = tk.BooleanVar(value=True)
+        self.use_dithering = tk.BooleanVar(value=False)
+        self.use_small_texture_override = tk.BooleanVar(value=True)
+        self.small_nh_threshold = tk.IntVar(value=256)
+        self.small_n_threshold = tk.IntVar(value=128)
+        self.enable_parallel = tk.BooleanVar(value=True)
+        self.max_workers = tk.IntVar(value=max(1, cpu_count() - 1))
+        self.chunk_size_mb = tk.IntVar(value=75)
+
+        # State
+        self.processing = False
+        self.total_input_size = 0
+        self.total_output_size = 0
+        self.processed_count = 0
+        self.failed_count = 0
+
+        self.create_widgets()
+
+    def create_widgets(self):
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        tab_help = ttk.Frame(notebook)
+        tab_settings = ttk.Frame(notebook)
+        tab_process = ttk.Frame(notebook)
+        tab_version = ttk.Frame(notebook)
+
+        notebook.add(tab_help, text="📖 READ THIS FIRST - Help & Documentation")
+        notebook.add(tab_settings, text="⚙️ Settings")
+        notebook.add(tab_process, text="▶️ Process Files")
+        notebook.add(tab_version, text="📋 Version Info")
+
+        self._create_help_tab(tab_help)
+        self._create_settings_tab(tab_settings)
+        self._create_process_tab(tab_process)
+        self._create_version_tab(tab_version)
+
+    def _create_help_tab(self, tab_help):
+        """Create the help/documentation tab with scrollable content"""
+        main_container = ttk.Frame(tab_help)
+        main_container.pack(fill="both", expand=True)
+
+        canvas_help = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar_help = ttk.Scrollbar(main_container, orient="vertical", command=canvas_help.yview)
+        scrollable_help = ttk.Frame(canvas_help)
+
+        scrollable_help.bind(
+            "<Configure>",
+            lambda e: canvas_help.configure(scrollregion=canvas_help.bbox("all"))
+        )
+
+        canvas_help.create_window((0, 0), window=scrollable_help, anchor="nw")
+        canvas_help.configure(yscrollcommand=scrollbar_help.set)
+
+        canvas_help.pack(side="left", fill="both", expand=True)
+        scrollbar_help.pack(side="right", fill="y")
+
+        scroll_hint = ttk.Label(tab_help, text="⬇ Scroll down for more options ⬇",
+                               font=("", 9, "bold"), foreground="blue",
+                               background="#f0f0f0", anchor="center")
+        scroll_hint.pack(side="bottom", fill="x", pady=2)
+
+        def _on_mousewheel(event):
+            canvas_help.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_help.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # About section
+        frame_info = ttk.LabelFrame(scrollable_help, text="About", padding=10)
+        frame_info.pack(fill="x", padx=10, pady=5)
+
+        info_text = (
+            "OpenMW Normal Map Optimizer\n\n"
+            "This tool optimizes, fixes, and compresses normal maps for OpenMW.\n\n"
+            "If any of the text below doesn't make sense to you and you just want the game to run\n"
+            "better, just use my default settings. On the Settings tab, the only thing\n"
+            "I'd vary is setting Scale Factor from 1.0 to 0.5 if you want extra performance.\n\n"
+            "⚠ ALWAYS DO A DRY RUN.\n\n"
+            "IMPORTANT ASSUMPTIONS:\n"
+            "1. Your normal maps use DirectX-style (G=Y-), Not OpenGL-style (G=Y+).\n"
+            "   I cannot auto-detect inverted Y - use the checkbox if needed.\n\n"
+            "2. You have UNCOMPRESSED normal maps. This tool is designed to compress\n"
+            "   uncompressed textures.\n\n"
+            "   Already using BC3/BC1? The main thing to avoid is accidentally converting\n"
+            "   to larger formats when NOT resizing:\n"
+            "   • BC3 → BGRA: 4x larger files with no quality improvement\n"
+            "   • BC3 → BC5: Same file size, but artifacts remain (no benefit)\n"
+            "   • BC3 → BC3: Surprisingly pretty harmless! \"double compression\" produces\n"
+            "     nearly identical results (e.g. PSNR ~64 dB, MSE ~0.03)\n\n"
+            "   Why does the tool reprocess BC3/BC1 files? It fixes technical issues:\n"
+            "   • Regenerates mipmap chains (textures may have bad/missing mipmaps)\n"
+            "   • Reconstructs Z channels (this is sometimes missing)\n\n"
+            "   Valid reasons to process already-compressed textures:\n"
+            "   • Resizing (downscaling/upscaling) - the main use case\n"
+            "   • Fixing broken mipmaps or Z channels - surprisingly common\n\n"
+            "   Want to restore quality from heavily compressed BC3/BC1? You can't \"upgrade\"\n"
+            "   compressed textures by converting formats. Instead:\n"
+            "   1. Use chaiNNer with artifact removal models to restore detail\n"
+            "   2. Then use this tool to recompress to your preferred format\n\n"
+            "   Note for regular users: These are edge cases mostly relevant to mod authors.\n"
+            "   If you just want vastly better performance with very little quality loss,\n"
+            "   the default settings will work fine.\n\n"
+            "   Still unsure? Use \"Dry Run\" to see what will happen before processing.\n"
+            "   It has a file by file breakdown and statistics at the bottom.\n\n"
+            "3. Compression and downsampling are LOSSY (you lose information). However,\n"
+            "   75-95% space savings is nearly always worth it.\n\n"
+            "4. Z-channel reconstruction: Many normal map generators output 2-channel\n"
+            "   (RG only) maps, expecting BC5/ATI2 or R8G8 formats. OpenMW will ONLY\n"
+            "   compute Z on-the-fly for BC5/ATI2 and R8G8 formats. For all other\n"
+            "   formats (BC3/DXT5, BC1/DXT1, BGRA, BGR), you MUST have Z pre-computed\n"
+            "   in the file. This tool can reconstruct Z = sqrt(1 - X² - Y²) for those\n"
+            "   formats that need RGB stored explicitly (enabled by default, toggle in\n"
+            "   settings if you already have Z computed).\n\n"
+            "FINAL CAVEAT:\n"
+            "This is all my personal opinion and experience. I have compressed a lot of\n"
+            "normal maps for a variety of games and done probably an unhealthy amount of\n"
+            "work with the DDS filetype. You can do whatever you want if it makes sense\n"
+            "to you. That's why I left in a bunch of options on the settings page.\n\n"
+        )
+
+        info_label = ttk.Label(frame_info, text=info_text, justify="left",
+                              font=("", 9), wraplength=self.WRAPLENGTH)
+        info_label.pack(anchor="w")
+
+        links_frame = ttk.Frame(frame_info)
+        links_frame.pack(anchor="w", pady=(5, 0))
+
+        ttk.Label(links_frame, text="Resources:", font=("", 9, "bold")).pack(side="left")
+
+        self._create_link(links_frame, "Normal Map Upscaling Models",
+                         "https://openmodeldb.info/collections/c-normal-map-upscaling")
+        ttk.Label(links_frame, text="|").pack(side="left", padx=5)
+        self._create_link(links_frame, "chaiNNer FAQ", "https://openmodeldb.info/docs/faq")
+        ttk.Label(links_frame, text="|").pack(side="left", padx=5)
+        self._create_link(links_frame, "DXT Artifact Removal", "https://openmodeldb.info/models/1x-DEDXT")
+
+        # Format Reference
+        frame_format_ref = ttk.LabelFrame(scrollable_help, text="Format Reference", padding=10)
+        frame_format_ref.pack(fill="x", padx=10, pady=5)
+
+        format_ref_text = (
+            "RECOMMENDED:\n"
+            "  BC5/ATI2: 8 bpp (16 bytes/block), 2-channel 8-bit each, 2:1 ratio, best for normals\n"
+            "  BC3/DXT5: 8 bpp (16 bytes/block), RGB shares 4 bpp (5:6:5), A gets 4 bpp, for normals+height\n\n"
+            "IT DEPENDS:\n"
+            "  BGRA (8:8:8:8): 32 bpp, uncompressed, for normals+height ≤512x512 or smooth gradients critical\n\n"
+            "NOT RECOMMENDED:\n"
+            "  BC1/DXT1: 4 bpp (8 bytes/block), RGB shares 4 bpp (5:6:5), 1-bit alpha, visible artifacts\n"
+            "  BGR (8:8:8): 24 bpp, uncompressed, no alpha, very large files\n\n"
+            "Note: BC3 and BC1 use the same RGB compression (5:6:5 sharing 4 bpp). BC5\n"
+            "gives each channel full 4 bpp, making it far superior for normals. This tool\n"
+            "can force uniform weighting (enabled by default) for BC3/BC1 instead of the\n"
+            "default perceptual weighting (which favors green channel in the 5:6:5 split).\n\n"
+            "Why BC3 over BC1? For pure normal maps we only need RG. BC5 vs BGR (3x\n"
+            "larger) vs BC1 (0.5x smaller). BGR is much larger without benefit. BC1 is\n"
+            "smaller but damages quality significantly. BC5 is the clear winner.\n\n"
+            "For RGBA (normals+height), choose BC3 or BGRA. BGRA is 4x larger than BC3.\n"
+            "Outside of specific use cases (≤512x512 or critical gradients), take the\n"
+            "compression hit and reduce file size. See comparisons below.\n\n"
+            "bpp = bits per pixel"
+        )
+
+        format_ref_label = ttk.Label(frame_format_ref, text=format_ref_text, justify="left",
+                                     font=("Courier New", 8), wraplength=self.WRAPLENGTH)
+        format_ref_label.pack(anchor="w")
+
+        bc_link_frame = ttk.Frame(frame_format_ref)
+        bc_link_frame.pack(anchor="w", pady=(2, 0))
+        self._create_link(bc_link_frame, "Block Compression Technical Details",
+                         "https://learn.microsoft.com/en-us/windows/win32/direct3d10/d3d10-graphics-programming-guide-resources-block-compression",
+                         font_size=8)
+
+        # File Size Comparison
+        frame_size_comp = ttk.LabelFrame(scrollable_help, text="File Size Comparison (with mipmaps)", padding=10)
+        frame_size_comp.pack(fill="x", padx=10, pady=5)
+
+        size_comp_text = (
+            "2048x2048:  BGRA=22.4MB  BGR=16.8MB  BC5=5.6MB  BC3=5.6MB  BC1=2.8MB\n"
+            "1024x1024:  BGRA=5.6MB   BGR=4.2MB   BC5=1.4MB  BC3=1.4MB  BC1=0.7MB\n\n"
+            "⚠ IMPORTANT: Unless you REALLY know what you're doing, your normal maps should NEVER exceed 5.6MB.\n"
+            "   Stick to BC5 (2048x2048 max) or BC3 (2048x2048 max) formats. In most cases, go smaller!\n\n"
+            "For normal+height (_NH): Choose between:\n"
+            "  • 1.0x scale BC3: More fine detail, compressed\n"
+            "  • 0.5x scale BGRA: Smoother gradients, uncompressed, same file size as 1.0x BC3"
+        )
+
+        size_comp_label = ttk.Label(frame_size_comp, text=size_comp_text, justify="left",
+                                    font=("Courier New", 8), wraplength=self.WRAPLENGTH)
+        size_comp_label.pack(anchor="w")
+
+    def _create_settings_tab(self, tab_settings):
+        """Create the settings tab with all configuration options"""
+        main_container = ttk.Frame(tab_settings)
+        main_container.pack(fill="both", expand=True)
+
+        canvas_settings = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar_settings = ttk.Scrollbar(main_container, orient="vertical", command=canvas_settings.yview)
+        scrollable_settings = ttk.Frame(canvas_settings)
+
+        scrollable_settings.bind(
+            "<Configure>",
+            lambda e: canvas_settings.configure(scrollregion=canvas_settings.bbox("all"))
+        )
+
+        canvas_settings.create_window((0, 0), window=scrollable_settings, anchor="nw")
+        canvas_settings.configure(yscrollcommand=scrollbar_settings.set)
+
+        canvas_settings.pack(side="left", fill="both", expand=True)
+        scrollbar_settings.pack(side="right", fill="y")
+
+        scroll_hint = ttk.Label(tab_settings, text="⬇ Scroll down for more options ⬇",
+                               font=("", 9, "bold"), foreground="blue",
+                               background="#f0f0f0", anchor="center")
+        scroll_hint.pack(side="bottom", fill="x", pady=2)
+
+        def _on_mousewheel(event):
+            canvas_settings.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_settings.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Directory Info
+        frame_dir_info = ttk.LabelFrame(scrollable_settings, text="⚠ Important: Directory Structure", padding=10)
+        frame_dir_info.pack(fill="x", padx=10, pady=5)
+
+        dir_info_text = (
+            "• Input and Output directories MUST be different folders\n"
+            "• Nested directory structures are preserved in the output\n"
+            "  Example:\n"
+            "    Input:  mymod_input/\n"
+            "    Output: mymod_output/\n"
+            "    mymod_input/textures/weapons/sword_n.dds → mymod_output/textures/weapons/sword_n.dds"
+        )
+        ttk.Label(frame_dir_info, text=dir_info_text, justify="left",
+                 font=("", 8), wraplength=self.WRAPLENGTH).pack(anchor="w")
+
+        # Input Directory
+        frame_input = ttk.LabelFrame(scrollable_settings, text="Input Directory", padding=10)
+        frame_input.pack(fill="x", padx=10, pady=5)
+        ttk.Entry(frame_input, textvariable=self.input_dir, width=50).pack(side="left", padx=5)
+        ttk.Button(frame_input, text="Browse...", command=self.browse_input).pack(side="left")
+
+        # Output Directory
+        frame_output = ttk.LabelFrame(scrollable_settings, text="Output Directory", padding=10)
+        frame_output.pack(fill="x", padx=10, pady=5)
+        ttk.Entry(frame_output, textvariable=self.output_dir, width=50).pack(side="left", padx=5)
+        ttk.Button(frame_output, text="Browse...", command=self.browse_output).pack(side="left")
+
+        # Format Options
+        frame_formats = ttk.LabelFrame(scrollable_settings, text="Format Options", padding=10)
+        frame_formats.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_formats, text="_N.dds format:").grid(row=0, column=0, sticky="w", pady=5)
+        n_combo = ttk.Combobox(frame_formats, textvariable=self.n_format,
+                               values=["BC5/ATI2", "BC1/DXT1", "BGRA", "BGR"], state="readonly", width=20)
+        n_combo.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_formats, text="(Recommended: BC5/ATI2 - RG only)",
+                 font=("", 8, "italic")).grid(row=0, column=2, sticky="w")
+
+        ttk.Label(frame_formats, text="_NH.dds format (RGBA):").grid(row=2, column=0, sticky="w", pady=5)
+        nh_combo = ttk.Combobox(frame_formats, textvariable=self.nh_format,
+                                values=["BC3/DXT5", "BGRA"], state="readonly", width=20)
+        nh_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_formats, text="(Recommended: BC3/DXT5 (mostly) Read the Documentation Section.)",
+                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
+
+        # Resize Options
+        frame_resize = ttk.LabelFrame(scrollable_settings, text="Resize Options", padding=10)
+        frame_resize.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_resize, text="Resize Method:").grid(row=0, column=0, sticky="w", pady=5)
+        resize_combo = ttk.Combobox(frame_resize, textvariable=self.resize_method,
+                                    values=[
+                                        "CUBIC (Recommended - smooth surfaces + detail)",
+                                        "FANT (Detail preservation - similar to Lanczos)",
+                                        "BOX (Blurry, good for gradients)",
+                                        "LINEAR (Fast, general purpose)"
+                                    ], state="readonly", width=45)
+        resize_combo.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+
+        ttk.Label(frame_resize, text="Scale Factor:").grid(row=1, column=0, sticky="w", pady=5)
+        scale_combo = ttk.Combobox(frame_resize, textvariable=self.scale_factor,
+                                   values=[0.125, 0.25, 0.5, 1.0], state="readonly", width=20)
+        scale_combo.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_resize, text="(1.0 = no resizing unless max set)",
+                 font=("", 8, "italic")).grid(row=1, column=2, sticky="w")
+
+        ttk.Label(frame_resize, text="Max Resolution:").grid(row=2, column=0, sticky="w", pady=5)
+        max_res_combo = ttk.Combobox(frame_resize, textvariable=self.max_resolution,
+                                     values=[0, 128, 256, 512, 1024, 2048, 4096, 8192],
+                                     state="readonly", width=20)
+        max_res_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_resize, text="(0 = no limit; Downsamples textures above threshold EVEN at 1.0 scale)",
+                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w", columnspan=2)
+        ttk.Label(frame_resize, text="Recommended: 2048 unless you know what you're doing",
+                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w", padx=(0, 0), columnspan=2)
+
+        ttk.Label(frame_resize, text="Min Resolution:").grid(row=4, column=0, sticky="w", pady=5)
+        min_res_combo = ttk.Combobox(frame_resize, textvariable=self.min_resolution,
+                                     values=[0, 128, 256, 512, 1024, 2048, 4096, 8192],
+                                     state="readonly", width=20)
+        min_res_combo.grid(row=4, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_resize, text="(0 = no limit; Only applies when scale < 1.0, prevents downsampling below this)",
+                 font=("", 8, "italic")).grid(row=4, column=2, sticky="w", columnspan=2)
+        ttk.Label(frame_resize, text="Recommended: 256 for downsampling",
+                 font=("", 8, "italic")).grid(row=5, column=2, sticky="w", padx=(0, 0), columnspan=2)
+
+        # Normal Map Options
+        frame_normal_opts = ttk.LabelFrame(scrollable_settings, text="Normal Map Options", padding=10)
+        frame_normal_opts.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_normal_opts, text="Convert OpenGL to DirectX (Invert Y channel)",
+                       variable=self.invert_y).grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Label(frame_normal_opts,
+                 text="Note: OpenMW expects DirectX-style normal maps (Y-). Use this if your source uses OpenGL convention (Y+).",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=2)
+
+        ttk.Checkbutton(frame_normal_opts, text="Reconstruct Z channel from X/Y (recommended)",
+                       variable=self.reconstruct_z).grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Label(frame_normal_opts,
+                 text="⚠ Only disable if you KNOW your maps have correct Z data, and you don't want to recalculate it based on\npotentially lossy input R and G (e.g. converting BC3 to half-sized BC3). BC5 always skips Z.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=3, column=0, columnspan=2, sticky="w", pady=2)
+
+        ttk.Checkbutton(frame_normal_opts, text="Use uniform weighting for BC1/BC3 (recommended)",
+                       variable=self.uniform_weighting).grid(row=4, column=0, sticky="w", pady=2)
+        ttk.Label(frame_normal_opts,
+                 text="Normal maps store geometric data, not perceptual color. Uniform weighting gives equal precision to RGB.\nOnly applies to BC1/DXT1 and BC3/DXT5 formats.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+
+        ttk.Checkbutton(frame_normal_opts, text="Use dithering for BC1/BC3 (NOT recommended)",
+                       variable=self.use_dithering).grid(row=6, column=0, sticky="w", pady=2)
+        ttk.Label(frame_normal_opts,
+                 text="⚠ Dithering adds noise which corrupts normal vectors and causes lighting artifacts.\nOnly applies to BC1/DXT1 and BC3/DXT5 formats.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
+
+        # Small Texture Handling
+        frame_small_tex = ttk.LabelFrame(scrollable_settings, text="Small Texture Handling", padding=10)
+        frame_small_tex.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_small_tex, text="Override format for small textures (recommended)",
+                       variable=self.use_small_texture_override).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_small_tex,
+                 text="Small textures benefit from uncompressed formats. This overrides your format settings for tiny textures.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_small_tex, text="_NH threshold (BGRA):").grid(row=2, column=0, sticky="w", pady=5, padx=(20, 0))
+        nh_threshold_combo = ttk.Combobox(frame_small_tex, textvariable=self.small_nh_threshold,
+                                         values=[0, 64, 128, 256, 512], state="readonly", width=15)
+        nh_threshold_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_small_tex, text="(Textures ≤ this on any side use BGRA, recommended: 256)",
+                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
+
+        ttk.Label(frame_small_tex, text="_N threshold (BGR):").grid(row=3, column=0, sticky="w", pady=5, padx=(20, 0))
+        n_threshold_combo = ttk.Combobox(frame_small_tex, textvariable=self.small_n_threshold,
+                                        values=[0, 64, 128, 256, 512], state="readonly", width=15)
+        n_threshold_combo.grid(row=3, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_small_tex, text="(Textures ≤ this on any side use BGR, recommended: 128)",
+                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w")
+
+        ttk.Label(frame_small_tex,
+                 text="⚠ Note: Thresholds are checked AFTER resizing. Set to 0 to disable override for that type.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
+
+        # Parallel Processing Settings
+        frame_parallel = ttk.LabelFrame(scrollable_settings, text="Parallel Processing", padding=10)
+        frame_parallel.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_parallel, text="Enable parallel processing (recommended for speedy processing.)",
+                       variable=self.enable_parallel).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_parallel,
+                 text=f"Parallel processing uses multiple CPU cores to process files simultaneously. Detected: {cpu_count()} cores",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_parallel, text="Max workers:").grid(row=2, column=0, sticky="w", pady=5, padx=(20, 0))
+        workers_combo = ttk.Combobox(frame_parallel, textvariable=self.max_workers,
+                                     values=list(range(1, cpu_count() + 1)), state="readonly", width=15)
+        workers_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_parallel, text=f"(CPU cores to use, recommended: {max(1, cpu_count() - 1)})",
+                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
+
+        ttk.Label(frame_parallel, text="Chunk size (MB):").grid(row=3, column=0, sticky="w", pady=5, padx=(20, 0))
+        chunk_combo = ttk.Combobox(frame_parallel, textvariable=self.chunk_size_mb,
+                                   values=[25, 50, 75, 100, 150, 200], state="readonly", width=15)
+        chunk_combo.grid(row=3, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_parallel, text="(Total filesize per batch, recommended: 50-100MB)",
+                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w")
+
+        ttk.Label(frame_parallel,
+                 text="⚠ Chunking groups files by total size to balance I/O and CPU usage across workers.\n"
+                      "Larger chunks = fewer context switches, but less granular progress.\n"
+                      "Smaller chunks = more responsive progress, but more overhead.\n\n"
+                      "If your computer becomes unresponsive, lower the CPU cores used or make the chunks smaller.\n"
+                      "This is pretty unlikely though. It's worth making 15 minutes of processing take only 15 seconds.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
+
+    def _create_process_tab(self, tab_process):
+        """Create the processing tab with progress log and controls"""
+        # Progress Bar
+        frame_progress = ttk.LabelFrame(tab_process, text="Progress", padding=10)
+        frame_progress.pack(fill="x", padx=10, pady=5)
+
+        self.progress_label = ttk.Label(frame_progress, text="Ready to process", font=("", 9))
+        self.progress_label.pack(anchor="w", pady=(0, 5))
+
+        self.progress_bar = ttk.Progressbar(frame_progress, mode="determinate", length=400)
+        self.progress_bar.pack(fill="x", pady=(0, 5))
+
+        # Progress/Log
+        frame_log = ttk.LabelFrame(tab_process, text="Log", padding=10)
+        frame_log.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.log_text = tk.Text(frame_log, height=10, width=70, state="disabled", wrap="word")
+        scrollbar = ttk.Scrollbar(frame_log, command=self.log_text.yview)
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        # Space Savings Display
+        frame_stats = ttk.LabelFrame(tab_process, text="Summary", padding=10)
+        frame_stats.pack(fill="x", padx=10, pady=5)
+        self.stats_label = ttk.Label(frame_stats, text="No files processed yet", font=("", 10))
+        self.stats_label.pack()
+
+        # Buttons
+        button_frame = ttk.Frame(tab_process)
+        button_frame.pack(pady=10)
+        self.analyze_btn = ttk.Button(button_frame, text="Dry Run (Analysis - Run me first!)", command=self.start_analysis)
+        self.analyze_btn.pack(side="left", padx=5)
+        self.export_btn = ttk.Button(button_frame, text="Export Analysis Report", command=self.export_log, state="disabled")
+        self.export_btn.pack(side="left", padx=5)
+        self.process_btn = ttk.Button(button_frame, text="Process Files", command=self.start_processing)
+        self.process_btn.pack(side="left", padx=5)
+
+    def _create_version_tab(self, tab_version):
+        """Create the version history tab"""
+        main_container = ttk.Frame(tab_version)
+        main_container.pack(fill="both", expand=True)
+
+        canvas_version = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar_version = ttk.Scrollbar(main_container, orient="vertical", command=canvas_version.yview)
+        scrollable_version = ttk.Frame(canvas_version)
+
+        scrollable_version.bind(
+            "<Configure>",
+            lambda e: canvas_version.configure(scrollregion=canvas_version.bbox("all"))
+        )
+
+        canvas_version.create_window((0, 0), window=scrollable_version, anchor="nw")
+        canvas_version.configure(yscrollcommand=scrollbar_version.set)
+
+        canvas_version.pack(side="left", fill="both", expand=True)
+        scrollbar_version.pack(side="right", fill="y")
+
+        scroll_hint = ttk.Label(tab_version, text="⬇ Scroll down for more ⬇",
+                               font=("", 9, "bold"), foreground="blue",
+                               background="#f0f0f0", anchor="center")
+        scroll_hint.pack(side="bottom", fill="x", pady=2)
+
+        def _on_mousewheel(event):
+            canvas_version.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas_version.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # Version Info
+        frame_version = ttk.LabelFrame(scrollable_version, text="Version Features", padding=10)
+        frame_version.pack(fill="x", padx=10, pady=5)
+
+        version_text = (
+            "Version 0.4\n"
+            "Features:\n"
+            "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
+            "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
+            "  • Resolution scaling and constraints\n"
+            "  • Z-channel reconstruction for proper normal mapping\n"
+            "  • Y flip normal map conversion\n"
+            "  • Smart small texture handling\n"
+            "  • Dry run analysis with size projections\n"
+            "  • Detailed processing logs and statistics\n"
+            "  • Export analysis reports\n"
+            "  • Parallel processing (multi-core support for faster batch operations)\n\n"
+            "Known Issues:\n"
+            "  • The tool allows converting compressed formats to uncompressed formats if\n"
+            "    selected. Ideally, compressed inputs without resizing would be copied as-is,\n"
+            "    but since Z-channel validity cannot be verified without some dependencies\n"
+            "    (numpy/PIL) + overhead, the tool reprocesses all files. This may cause unnecessary\n"
+            "    decompression where the output will still look compressed but have a large file size (Very Bad)\n"
+            "    or introduce double compression artifacts (Varies from Fine to Very Bad).\n"
+            "    The user HAS been warned about this on the document page. Further the dry run does tell them what conversions are occurring.\n"
+            "  • Future versions will add (optional) format validation to preserve compressed inputs\n"
+            "    when no resizing occurs IF Z-channel reconstruction is not needed or selected.\n"
+            "    Should also keep in mind the user may have not generated mipmaps or have created invalid ones.\n"
+        )
+
+        version_label = ttk.Label(frame_version, text=version_text, justify="left",
+                                  font=("Courier New", 9), wraplength=self.WRAPLENGTH)
+        version_label.pack(anchor="w")
+
+    def _create_link(self, parent, text, url, font_size=9):
+        """Helper to create clickable hyperlinks"""
+        link = ttk.Label(parent, text=text, foreground="blue", cursor="hand2",
+                        font=("", font_size, "underline"))
+        link.pack(side="left", padx=(5, 0) if font_size == 9 else 0)
+        link.bind("<Button-1>", lambda e: webbrowser.open(url))
+
+    def browse_input(self):
+        directory = filedialog.askdirectory(title="Select Input Directory")
+        if directory:
+            self.input_dir.set(directory)
+
+    def browse_output(self):
+        directory = filedialog.askdirectory(title="Select Output Directory")
+        if directory:
+            self.output_dir.set(directory)
+
+    def log(self, message):
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", f"{message}\n")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+        self.root.update_idletasks()
+
+    def export_log(self):
+        """Export current log content to a text file"""
+        log_content = self.log_text.get("1.0", "end-1c")
+        if not log_content.strip():
+            messagebox.showwarning("Warning", "No log content to export")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title="Save Analysis Report",
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            initialfile="normal_map_analysis_report.txt"
+        )
+
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(log_content)
+                messagebox.showinfo("Success", f"Report exported to:\n{file_path}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to export report:\n{str(e)}")
+
+    def get_settings(self) -> ProcessingSettings:
+        """Convert GUI variables to ProcessingSettings object"""
+        return ProcessingSettings(
+            n_format=self.n_format.get(),
+            nh_format=self.nh_format.get(),
+            scale_factor=self.scale_factor.get(),
+            max_resolution=self.max_resolution.get(),
+            min_resolution=self.min_resolution.get(),
+            invert_y=self.invert_y.get(),
+            reconstruct_z=self.reconstruct_z.get(),
+            uniform_weighting=self.uniform_weighting.get(),
+            use_dithering=self.use_dithering.get(),
+            use_small_texture_override=self.use_small_texture_override.get(),
+            small_nh_threshold=self.small_nh_threshold.get(),
+            small_n_threshold=self.small_n_threshold.get(),
+            resize_method=self.resize_method.get(),
+            enable_parallel=self.enable_parallel.get(),
+            max_workers=self.max_workers.get(),
+            chunk_size_mb=self.chunk_size_mb.get()
+        )
+
+    def start_analysis(self):
+        if self.processing:
+            return
+
+        if not self.input_dir.get():
+            messagebox.showerror("Error", "Please select input directory")
+            return
+
+        self.processing = True
+        self.analyze_btn.configure(state="disabled")
+        self.process_btn.configure(state="disabled")
+        self.export_btn.configure(state="disabled")
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+
+        threading.Thread(target=self.analyze_files, daemon=True).start()
+
+    def start_processing(self):
+        if self.processing:
+            return
+
+        if not self.input_dir.get() or not self.output_dir.get():
+            messagebox.showerror("Error", "Please select both input and output directories")
+            return
+
+        self.processing = True
+        self.analyze_btn.configure(state="disabled")
+        self.process_btn.configure(state="disabled")
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
+
+        self.total_input_size = 0
+        self.total_output_size = 0
+        self.processed_count = 0
+        self.failed_count = 0
+        self.stats_label.config(text="Processing...")
+
+        threading.Thread(target=self.process_files, daemon=True).start()
+
+    def analyze_files(self):
+        """Run analysis using core processor"""
+        start_time = time.time()
+        try:
+            settings = self.get_settings()
+            processor = NormalMapProcessor(settings)
+
+            input_dir = Path(self.input_dir.get())
+            self.log("=== Dry Run (Preview) ===\n")
+
+            # Define progress callback
+            def progress_callback(current, total):
+                pass  # Analysis results are logged in batch below
+
+            results = processor.analyze_files(input_dir, progress_callback)
+
+            if not results:
+                self.log("No normal map files found!")
+                messagebox.showinfo("Dry Run Complete", "No normal map files found")
+                return
+
+            # Count files
+            n_count = sum(1 for r in results if not r.is_nh)
+            nh_count = sum(1 for r in results if r.is_nh)
+            self.log(f"Found {nh_count} _nh.dds file(s)")
+            self.log(f"Found {n_count} _n.dds file(s)")
+            self.log(f"Total: {len(results)} normal map file(s)\n")
+
+            # Analyze results
+            total_current_size = sum(r.file_size for r in results)
+            total_projected_size = sum(r.projected_size for r in results if not r.error)
+            format_stats = {}
+            oversized_textures = []
+            undersized_textures = []
+
+            action_groups = {
+                'resize_and_reformat': [],
+                'resize_only': [],
+                'reformat_only': [],
+                'no_change': []
+            }
+
+            for i, result in enumerate(results, 1):
+                if result.error:
+                    self.log(f"[{i}/{len(results)}] Error analyzing {result.relative_path}: {result.error}")
+                    continue
+
+                # Update format stats
+                if result.format not in format_stats:
+                    format_stats[result.format] = {'count': 0, 'size': 0}
+                format_stats[result.format]['count'] += 1
+                format_stats[result.format]['size'] += result.file_size
+
+                # Check size warnings
+                if result.width and result.height:
+                    max_dim = max(result.width, result.height)
+                    min_dim = min(result.width, result.height)
+
+                    if max_dim > 2048:
+                        oversized_textures.append((result.relative_path, result.width, result.height))
+                    if min_dim < 256:
+                        undersized_textures.append((result.relative_path, result.width, result.height))
+
+                    # Categorize action
+                    will_resize = (result.new_width != result.width) or (result.new_height != result.height)
+                    will_reformat = result.format != result.target_format
+
+                    if will_resize and will_reformat:
+                        action_groups['resize_and_reformat'].append(
+                            (result.relative_path, result.width, result.height, result.format,
+                             result.new_width, result.new_height, result.target_format)
+                        )
+                    elif will_resize:
+                        action_groups['resize_only'].append(
+                            (result.relative_path, result.width, result.height, result.format,
+                             result.new_width, result.new_height)
+                        )
+                    elif will_reformat:
+                        action_groups['reformat_only'].append(
+                            (result.relative_path, result.width, result.height, result.format, result.target_format)
+                        )
+                    else:
+                        action_groups['no_change'].append(
+                            (result.relative_path, result.width, result.height, result.format)
+                        )
+
+                self.log(f"[{i}/{len(results)}] Analyzing: {result.relative_path}")
+                self.log(f"  Current: {result.format}, {result.width}x{result.height}, {format_size(result.file_size)}")
+                self.log(f"  Projected: {result.target_format}, {result.new_width}x{result.new_height}, {format_size(result.projected_size)}")
+
+            # Display stats
+            self.log("\n=== Current State ===")
+            self.log(f"Total size: {format_size(total_current_size)}")
+            if len(results) > 0:
+                self.log(f"Average size per file: {format_size(total_current_size // len(results))}")
+
+            self.log("\n=== Format Breakdown ===")
+            for fmt, stats in sorted(format_stats.items()):
+                self.log(f"{fmt}: {stats['count']} files, {format_size(stats['size'])} total")
+
+            # Show actions
+            self.log("\n=== Actions to be Taken ===")
+            self.log(f"Resize + Reformat: {len(action_groups['resize_and_reformat'])} files")
+            if action_groups['resize_and_reformat'] and len(action_groups['resize_and_reformat']) <= 3:
+                for path, w, h, fmt, new_w, new_h, new_fmt in action_groups['resize_and_reformat']:
+                    self.log(f"  • {path}: {w}×{h} {fmt} → {new_w}×{new_h} {new_fmt}")
+
+            self.log(f"Resize only: {len(action_groups['resize_only'])} files")
+            if action_groups['resize_only'] and len(action_groups['resize_only']) <= 3:
+                for path, w, h, fmt, new_w, new_h in action_groups['resize_only']:
+                    self.log(f"  • {path}: {w}×{h} → {new_w}×{new_h} (keeping {fmt})")
+
+            self.log(f"Reformat only: {len(action_groups['reformat_only'])} files")
+            if action_groups['reformat_only'] and len(action_groups['reformat_only']) <= 3:
+                for path, w, h, fmt, new_fmt in action_groups['reformat_only']:
+                    self.log(f"  • {path}: {fmt} → {new_fmt} (keeping {w}×{h})")
+
+            self.log(f"No change: {len(action_groups['no_change'])} files")
+            if action_groups['no_change'] and len(action_groups['no_change']) <= 3:
+                for path, w, h, fmt in action_groups['no_change']:
+                    self.log(f"  • {path}: {w}×{h} {fmt} (unchanged)")
+
+            # Projection
+            savings = total_current_size - total_projected_size
+            savings_percent = (savings / total_current_size * 100) if total_current_size > 0 else 0
+
+            self.log("\n=== Projected Output (with current settings) ===")
+            self.log(f"Projected total size: {format_size(total_projected_size)}")
+            self.log(f"Estimated savings: {format_size(savings)} ({savings_percent:.1f}%)")
+
+            # Warnings
+            if oversized_textures or undersized_textures:
+                self.log("\n=== ⚠ WARNINGS ===")
+
+            if oversized_textures:
+                self.log(f"\n⚠ Found {len(oversized_textures)} texture(s) larger than 2048 on any side:")
+                for path, w, h in oversized_textures[:5]:
+                    self.log(f"  • {path} ({w}x{h})")
+                if len(oversized_textures) > 5:
+                    self.log(f"  ... and {len(oversized_textures) - 5} more")
+                self.log("\nRECOMMENDATION: Use the 'Max Resolution' setting to limit texture size to 2048,")
+                self.log("unless these are texture atlases (which should be kept at their original size).")
+
+            if undersized_textures:
+                self.log(f"\n⚠ Found {len(undersized_textures)} texture(s) smaller than 256 on any side:")
+                for path, w, h in undersized_textures[:5]:
+                    self.log(f"  • {path} ({w}x{h})")
+                if len(undersized_textures) > 5:
+                    self.log(f"  ... and {len(undersized_textures) - 5} more")
+                self.log("\nRECOMMENDATION: Set 'Min Resolution' to 256 if you plan to resize.")
+                self.log("It is NOT recommended to resize textures smaller than 256x256.")
+
+            self.stats_label.config(
+                text=f"Current: {format_size(total_current_size)} → Projected: {format_size(total_projected_size)} ({savings_percent:.1f}% savings)"
+            )
+
+            elapsed_time = time.time() - start_time
+            self.log("\n=== Dry Run Complete ===")
+            self.log(f"Time taken: {format_time(elapsed_time)}")
+            if len(results) > 0:
+                avg_time = elapsed_time / len(results)
+                self.log(f"Average per file: {format_time(avg_time)}")
+
+            messagebox.showinfo("Dry Run Complete",
+                f"Current: {format_size(total_current_size)}\n"
+                f"Projected: {format_size(total_projected_size)}\n"
+                f"Estimated savings: {savings_percent:.1f}%")
+
+        except Exception as e:
+            self.log(f"\nError: {str(e)}")
+            messagebox.showerror("Error", f"Dry run failed: {str(e)}")
+        finally:
+            self.processing = False
+            self.analyze_btn.configure(state="normal")
+            self.process_btn.configure(state="normal")
+            self.export_btn.configure(state="normal")
+
+    def process_files(self):
+        """Run processing using core processor"""
+        start_time = time.time()
+        try:
+            settings = self.get_settings()
+            processor = NormalMapProcessor(settings)
+
+            input_dir = Path(self.input_dir.get())
+            output_dir = Path(self.output_dir.get())
+
+            n_files, nh_files = processor.find_normal_maps(input_dir)
+            total_files = len(n_files) + len(nh_files)
+
+            self.log(f"Found {len(nh_files)} _nh.dds file(s)")
+            self.log(f"Found {len(n_files)} _n.dds file(s)")
+            self.log(f"Total: {total_files} normal map file(s)\n")
+
+            if total_files == 0:
+                messagebox.showinfo("No Files", "No normal map files found")
+                return
+
+            # Initialize progress
+            self.progress_bar["maximum"] = total_files
+            self.progress_bar["value"] = 0
+
+            # Define progress callback
+            def progress_callback(current, total, result: ProcessingResult):
+                self.progress_bar["value"] = current
+                self.progress_label.config(text=f"Processed {current}/{total} files")
+
+                self.total_input_size += result.input_size
+
+                if result.success:
+                    self.total_output_size += result.output_size
+                    self.processed_count += 1
+
+                    if result.orig_dims and result.new_dims:
+                        orig_w, orig_h = result.orig_dims
+                        new_w, new_h = result.new_dims
+                        size_change = result.output_size - result.input_size
+                        size_change_str = f"+{format_size(size_change)}" if size_change > 0 else format_size(size_change)
+
+                        self.log(f"✓ {result.relative_path}")
+                        self.log(f"  {orig_w}×{orig_h} {result.orig_format} → {new_w}×{new_h} {result.new_format} | "
+                                f"{format_size(result.input_size)} → {format_size(result.output_size)} ({size_change_str})")
+                    else:
+                        self.log(f"✓ Completed: {result.relative_path}")
+                else:
+                    self.failed_count += 1
+                    error_msg = result.error_msg or 'Unknown error'
+                    self.log(f"✗ Failed: {result.relative_path} - {error_msg}")
+
+                self.root.update_idletasks()
+
+            # Process files
+            if settings.enable_parallel and total_files > 1:
+                self.log(f"Using parallel processing: {settings.max_workers} workers, {settings.chunk_size_mb}MB chunks\n")
+            else:
+                self.log("Using sequential processing\n")
+
+            processor.process_files(input_dir, output_dir, progress_callback)
+
+            self.progress_label.config(text="Processing complete!")
+
+            # Display final stats
+            elapsed_time = time.time() - start_time
+            total = self.processed_count + self.failed_count
+            savings = self.total_input_size - self.total_output_size
+            savings_percent = (savings / self.total_input_size * 100) if self.total_input_size > 0 else 0
+
+            stats_msg = f"Files: {self.processed_count}/{total} successful | {format_size(self.total_input_size)} → {format_size(self.total_output_size)} | Saved: {format_size(savings)} ({savings_percent:.1f}%)"
+            self.stats_label.config(text=stats_msg)
+
+            self.log("\n=== Processing Complete ===")
+            self.log(f"Total files: {total}")
+            self.log(f"Successful: {self.processed_count}")
+            self.log(f"Failed: {self.failed_count}")
+            self.log(f"Space savings: {format_size(savings)} ({savings_percent:.1f}%)")
+            self.log(f"Time taken: {format_time(elapsed_time)}")
+            if total > 0:
+                avg_time = elapsed_time / total
+                self.log(f"Average per file: {format_time(avg_time)}")
+
+            if self.failed_count > 0:
+                messagebox.showwarning("Completed with errors", f"Processing completed with {self.failed_count} failed file(s)\n\n{stats_msg}")
+            else:
+                messagebox.showinfo("Success", f"Processing completed!\n\n{stats_msg}")
+
+        except Exception as e:
+            self.log(f"\nError: {str(e)}")
+            messagebox.showerror("Error", f"Processing failed: {str(e)}")
+        finally:
+            self.processing = False
+            self.analyze_btn.configure(state="normal")
+            self.process_btn.configure(state="normal")
+
+
+def main():
+    """Entry point for GUI application"""
+    root = tk.Tk()
+    app = NormalMapProcessorGUI(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
