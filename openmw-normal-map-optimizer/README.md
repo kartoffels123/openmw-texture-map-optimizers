@@ -1,96 +1,229 @@
 # OpenMW Normal Map Optimizer
 
-This tool optimizes, fixes, and compresses normal maps for OpenMW.
+A high-performance tool for optimizing, fixing, and compressing normal maps for OpenMW.
+
+## Quick Start
+
+1. **Install Python** from [python.org](https://www.python.org/downloads/)
+   - Make sure to check "Add Python to PATH" during installation
+2. **Double-click** `OpenMW Normal Map Optimizer.bat` to launch
+3. **Configure** input/output directories in the Settings tab
+4. **Run a Dry Run** to preview changes before processing
+5. **Process Files** when you're ready
+
+**⚠ ALWAYS DO A DRY RUN FIRST** to see what will happen to your files.
 
 ## About
 
-If any of the text below doesn't make sense to you and you just want the game to run better, just use the default settings. On the Settings tab, the only thing I'd vary is setting Scale Factor from 1.0 to 0.5 if you want extra performance.
+If any of the technical details below don't make sense to you and you just want the game to run better, **use the default settings**. The only thing you might want to adjust is the **Scale Factor** (Settings tab) - set it to 0.5 for extra performance, or leave it at 1.0 to keep original resolution.
 
-**⚠ ALWAYS DO A DRY RUN.**
+## Features
 
-### Important Assumptions
+### Version 0.7 (Current)
+- **~100x faster dry run analysis** - Analyze 6,000 files in <1 second (vs 1 minute previously)
+- **Direct DDS header parsing** - No subprocess overhead for blazing fast analysis
+- **Optimized file discovery** - Scans only normal map files (_n.dds, _nh.dds) in large directories
+- **Grouped conversion summary** - Clear breakdown of format and resolution changes
+- **Extended format support** - BC4, BC6H, BC7, and many additional DDS formats
+- **Reorganized codebase** - Cleaner structure for easier maintenance
 
-1. **Your normal maps use DirectX-style (G=Y-)**, not OpenGL-style (G=Y+).
-   I cannot auto-detect inverted Y - use the checkbox if needed.
+### Core Features
+- **Batch processing** of normal maps (`_N.dds` and `_NH.dds`)
+- **Format conversion** (BC5/ATI2, BC3/DXT5, BC1/DXT1, BGRA, BGR)
+- **Texture downscaling** with quality filters and resolution constraints
+- **Z-channel reconstruction** for proper normal mapping
+- **Y flip conversion** (OpenGL ↔ DirectX normal maps)
+- **Smart small texture handling** - Avoids over-compressing tiny textures
+- **Smart format preservation** - Keeps compressed formats when not downscaling (v0.5)
+- **Auto-fix mislabeled NH→N textures** - Detects BGR/BC5/BC1 formats on NH files (v0.5)
+- **Auto-optimize N textures** - Removes wasted alpha channels (BGRA→BC5, BC3→BC1) (v0.5)
+- **Comprehensive warning system** - Shows potential issues before processing (v0.5)
+- **Dry run analysis** with size projections and detailed conversion breakdown
+- **Detailed processing logs** and statistics
+- **Export analysis reports** to text files
+- **Parallel processing** - Multi-core support for faster batch operations
 
-2. **You have UNCOMPRESSED normal maps.** This tool is designed to compress uncompressed textures.
+## GUI Overview
 
-   **Already using BC3/BC1?** The main thing to avoid is accidentally converting to larger formats when NOT resizing:
-   - BC3 → BGRA: 4x larger files with no quality improvement
-   - BC3 → BC5: Same file size, but artifacts remain (no benefit)
-   - BC3 → BC3: Surprisingly pretty harmless! "double compression" produces nearly identical results (e.g. PSNR ~64 dB, MSE ~0.03)
+The application has four tabs:
 
-   **Why does the tool reprocess BC3/BC1 files?** It fixes technical issues:
-   - Regenerates mipmap chains (textures may have bad/missing mipmaps)
-   - Reconstructs Z channels (this is sometimes missing)
+1. **📖 READ THIS FIRST** - Help & documentation with format recommendations
+2. **⚙️ Settings** - Configure directories, formats, resize options, and advanced settings
+3. **▶️ Process Files** - Run dry runs and process your normal maps
+4. **📋 Version Info** - Current version features and known issues
 
-   **Valid reasons to process already-compressed textures:**
-   - **Resizing** (downscaling/upscaling) - the main use case
-   - **Fixing broken mipmaps or Z channels** - surprisingly common
+## Important Notes
 
-   **Want to restore quality from heavily compressed BC3/BC1?** You can't "upgrade" compressed textures by converting formats. Instead:
-   1. Use chaiNNer with artifact removal models to restore detail
-   2. Then use this tool to recompress to your preferred format
+### 1. Normal Map Orientation
+**Your normal maps use DirectX-style (G=Y-)**, not OpenGL-style (G=Y+).
+- I cannot auto-detect inverted Y
+- Use the "Flip Y (OpenGL→DirectX)" checkbox in Settings if needed
 
-   **Note for regular users:** These are edge cases mostly relevant to mod authors. If you just want vastly better performance with very little quality loss, the default settings will work fine.
+### 2. This Tool is Designed For:
+- **Compressing uncompressed textures (BGRA/BGR)** - the primary use case
+- **"Smart" file optimization** on already-compressed textures to avoid wasting space
+- **Fixing common errors** (mislabeled formats, wasted alpha channels, broken mipmaps)
+- **Being minimally invasive** while being highly configurable
+- **Running very fast** with parallel processing support
 
-   Still unsure? Use "Dry Run" to see what will happen before processing. It has a file by file breakdown and statistics at the bottom.
+### 3. Compression & Quality
+**Compression and downscaling are LOSSY** (you lose information).
+- However, 75-95% space savings is nearly always worth it
+- BC5 compression is visually lossless for most normal maps
+- Dry run shows exact size projections before processing
 
-3. **Compression and downsampling are LOSSY** (you lose information). However, 75-95% space savings is nearly always worth it.
+## Working with Already-Compressed Textures
 
-4. **Z-channel reconstruction:** Many normal map generators output 2-channel (RG only) maps, expecting BC5/ATI2 or R8G8 formats. OpenMW will ONLY compute Z on-the-fly for BC5/ATI2 and R8G8 formats. For all other formats (BC3/DXT5, BC1/DXT1, BGRA, BGR), you MUST have Z pre-computed in the file. This tool can reconstruct Z = sqrt(1 - X² - Y²) for those formats that need RGB stored explicitly (enabled by default, toggle in settings if you already have Z computed).
+**Already using BC3/BC1?** The tool intelligently handles compressed textures:
 
-### Final Caveat
+### Smart Optimizations (Automatic)
+- **Avoids accidentally converting to larger formats** when NOT resizing
+  (BC3 → BGRA would be 4x larger with no benefit)
+- **Preserves good compressed formats** when not downscaling (enabled by default)
+- **Auto-detects and fixes mislabeled textures** (e.g., _NH files in BC5/BC1)
+- **Auto-optimizes wasted space** (e.g., N textures in BC3 → BC1 for half the size)
+- **Regenerates mipmap chains** (textures may have bad/missing mipmaps)
+- **Reconstructs Z channels** (sometimes missing or incorrect)
 
-This is all my personal opinion and experience. I have compressed a lot of normal maps for a variety of games and done probably an unhealthy amount of work with the DDS filetype. You can do whatever you want if it makes sense to you. That's why I left in a bunch of options on the settings page.
+### Note on Recompression
+Usually pretty harmless! "Double compression" produces nearly identical results (e.g., PSNR ~64 dB, MSE ~0.03) as long as no intermediate operation (e.g., resizing, color changes) is occurring.
 
-### Resources
+**Want to avoid reprocessing entirely?** Enable "Allow well-compressed textures to passthrough" in Settings > Smart Format Handling.
+
+### Valid Reasons to Process Already-Compressed Textures
+- **Resizing** (downscaling/upscaling) - the main use case
+- **Fixing broken mipmaps or Z channels** - surprisingly common
+- **Removing wasted space** (N textures with unused alpha channels)
+
+### Restoring Quality from Heavily Compressed Textures
+You can't "upgrade" compressed textures by converting formats. Instead:
+1. Use [chaiNNer](https://chainner.app/) with artifact removal models to restore detail
+2. Then use this tool to recompress to your preferred format
+
+## For Regular Users
+
+These are edge cases mostly relevant to mod authors. If you just want vastly better performance with very little quality loss, **the default settings will work fine**.
+
+**Still unsure?** Use **Dry Run** to see what will happen before processing. It has a detailed conversion breakdown and statistics.
+
+## Installation
+
+### Requirements
+- Python 3.7 or later
+- Windows (for DirectXTex tools)
+
+### Setup
+1. **Download/Clone** this repository
+2. **Install Python** from [python.org](https://www.python.org/downloads/)
+   - During installation, check "Add Python to PATH"
+3. **Verify installation** by opening Command Prompt and typing:
+   ```
+   python --version
+   ```
+   You should see something like `Python 3.13.x`
+
+### Running the Application
+Simply double-click **`OpenMW Normal Map Optimizer.bat`**
+
+If Python is not installed or not in PATH, the batch file will show helpful error messages.
+
+## Project Structure
+
+```
+openmw-normal-map-optimizer/
+├── OpenMW Normal Map Optimizer.bat  # Launch this!
+├── optimizer.py                     # Main entry point
+├── src/
+│   ├── core/
+│   │   ├── processor.py            # Core processing logic
+│   │   └── dds_parser.py           # Fast DDS header parser
+│   └── gui/
+│       └── main_window.py          # GUI implementation
+├── tools/                           # DirectXTex executables
+│   ├── texconv.exe
+│   ├── texdiag.exe
+│   └── texassemble.exe
+└── specs/                           # Reference files
+    ├── dds.ksy                      # DDS format specification
+    └── dds.py                       # Generated parser (reference)
+```
+
+## Version History
+
+### Version 0.7 (Current)
+- ~100x faster dry run analysis (6,000 files in <1 second vs 1 minute)
+- Direct DDS header parsing eliminates subprocess overhead
+- Optimized file discovery for large directories
+- Grouped conversion summary shows format/resize changes clearly
+- Reorganized codebase with cleaner structure
+- Support for BC4, BC6H, BC7, and many additional DDS formats
+
+### Version 0.6
+- UI/UX improvements and refinements
+- Enhanced log output and reporting
+
+### Version 0.5
+- Smart format handling preserves compressed formats when not downscaling
+- Auto-detection and fixing of mislabeled NH textures
+- Auto-optimization of N textures with wasted alpha channels
+- Comprehensive warning system shows potential issues before processing
+
+### Earlier Versions
+- Parallel processing support
+- Dry run analysis
+- Z-channel reconstruction
+- Format conversion and resolution scaling
+
+## Technical Notes
+
+### Understanding Format Preservation & Passthrough (v0.5+)
+
+There are two distinct options that control how already-compressed textures are handled:
+
+#### "Preserve compressed format when not downsampling" (Enabled by default)
+- **What it does:** Keeps the same format (e.g., BC1 → BC1) when NOT resizing. There's no point converting BC1 to BC5 when not downsampling - they're the same file size but BC1→BC5 conversion would introduce artifacts.
+- **Files are still reprocessed** to fix potential issues:
+  - Z-channel reconstruction (if missing or incorrect)
+  - Mipmap chain regeneration (if broken or missing)
+- **If downsampling:** Ignores this setting and uses your configured format (BC5/BC3/BGRA)
+- **Result:** Minimal quality loss (recompression artifacts), but technical correctness is ensured
+
+#### "Allow well-compressed textures to passthrough" (Disabled by default - use with caution!)
+- **What it does:** TRUE passthrough - files are simply **copied** with NO operations performed
+- **When files qualify for passthrough:**
+  - BC1 or BC5 for _N textures (well-compressed, no wasted alpha)
+  - BC3 for _NH textures (well-compressed, uses alpha)
+- **When files DO NOT qualify:**
+  - BC3 for _N textures (wasted alpha channel - not well-compressed)
+  - BC5/BC1 for _NH textures (missing alpha - not appropriate)
+  - Any texture that needs resizing
+- **Warning:** Only enable if you're certain your compressed textures already have correct Z-channels and mipmaps
+- **Result:** Maximum speed, but skips all corrections
+
+**Summary:**
+- **Format Preservation:** Same format, reprocessed for corrections (Z-channel, mipmaps)
+- **Passthrough:** No processing at all, just copy (only for well-compressed files by default)
+  - With "Smart format handling" disabled, you can get true passthrough for ALL compressed files
+
+**Final Word:** You can override and mix any of these settings. Check the **Dry Run** tab to see exactly what will happen before processing!
+
+### Double Compression
+Block compression (BC5/BC3/BC1) is deterministic - recompressing the same format (e.g., BC3 → BC3) produces nearly identical results with minimal quality loss (PSNR >60 dB, MSE <0.1). The tool reprocesses files to ensure proper mipmaps and Z-channel reconstruction, which means compressed inputs get recompressed to the same format. This is generally harmless for quality but doesn't reduce file size.
+
+### Performance Optimizations (v0.7)
+- **Fast header parsing:** Reads only the first 148 bytes of DDS files instead of spawning subprocesses
+- **Sequential analysis:** For dry runs with the fast parser, sequential processing is faster than parallel due to Windows multiprocessing overhead
+- **Targeted file discovery:** Only searches for `*_n.dds` and `*_nh.dds` patterns instead of all DDS files
+
+## Resources
 
 - [Normal Map Upscaling Models](https://openmodeldb.info/collections/c-normal-map-upscaling)
 - [chaiNNer FAQ](https://openmodeldb.info/docs/faq)
 - [DXT Artifact Removal](https://openmodeldb.info/models/1x-DEDXT)
+- [DirectXTex](https://github.com/Microsoft/DirectXTex) - Underlying texture conversion tools
 
-## Requirements
+## Final Notes
 
-- Python 3.x installed on your system
+This is all my personal opinion and experience. I have compressed a lot of normal maps for a variety of games and done probably an unhealthy amount of work with the DDS filetype. You can do whatever you want if it makes sense to you. That's why I left in a bunch of options on the settings page.
 
-## Setup
-
-1. Install Python from [python.org](https://www.python.org/downloads/)
-2. Ensure the following files are in the same folder:
-   - `texconv.exe`
-   - `texdiag.exe`
-   - `openmw_normalmap_optimizer.py`
-   - `run_openmw_normalmap_optimizer.bat`
-
-## Usage
-
-Run `run_openmw_normalmap_optimizer.bat` to start the application.
-
-The GUI has four tabs:
-- **📖 READ THIS FIRST - Help & Documentation** - Essential information about formats, recommendations, and technical details
-- **⚙️ Settings** - Configure input/output directories, formats, resize options, and processing parameters
-- **▶️ Process Files** - Run dry runs and process your normal maps
-- **📋 Version Info** - See current version features and known issues
-
-## Features (Version 0.3)
-
-- Batch processing of normal maps (`_N.dds` and `_NH.dds`)
-- Preserves nested directory structures
-- Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)
-- Resolution scaling and constraints
-- Z-channel reconstruction for proper normal mapping
-- Y flip normal map conversion (OpenGL to DirectX)
-- Configurable small and large texture handling
-- Dry run analysis with size projections
-- Detailed processing logs and statistics
-- Export analysis reports
-- Parallel processing (multi-core support for faster batch operations)
-
-## Technical Notes
-
-- **Double compression concerns:** Block compression (BC5/BC3/BC1) is deterministic - recompressing the same format (e.g., BC3 → BC3) produces nearly identical results with minimal quality loss (PSNR >60 dB, MSE <0.1). The tool currently reprocesses all files to ensure proper mipmaps and Z-channel reconstruction, which means compressed inputs get recompressed to the same format. This is generally harmless for quality but doesn't reduce file size.
-
-- **Why reprocess everything?** Z-channel validity and mipmap quality cannot be verified without additional dependencies (numpy/PIL), so the tool always regenerates proper mipmaps and reconstructs Z when needed. This ensures technical correctness at the cost of some processing time.
-
-- **Future improvements:** Optional format validation to skip reprocessing when compressed inputs don't need fixes (no resizing, valid mipmaps, correct Z-channel).
+The defaults are sensible for most users. If you're unsure, just run a dry run and look at the results!
