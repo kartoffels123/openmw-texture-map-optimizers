@@ -86,36 +86,48 @@ class NormalMapProcessorGUI:
         self._create_version_tab(tab_version)
 
     def _create_help_tab(self, tab_help):
-        """Create the help/documentation tab with scrollable content"""
-        main_container = ttk.Frame(tab_help)
+        """Create the help/documentation tab with nested sub-tabs"""
+        help_notebook = ttk.Notebook(tab_help)
+        help_notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+        tab_about = ttk.Frame(help_notebook)
+        tab_smart_format = ttk.Frame(help_notebook)
+        tab_formats = ttk.Frame(help_notebook)
+
+        help_notebook.add(tab_about, text="About & Guide")
+        help_notebook.add(tab_smart_format, text="Smart Format Decision Flow")
+        help_notebook.add(tab_formats, text="Format Reference")
+
+        self._create_about_doc(tab_about)
+        self._create_smart_format_doc(tab_smart_format)
+        self._create_formats_doc(tab_formats)
+
+    def _create_about_doc(self, parent):
+        """Create the about/guide documentation sub-tab"""
+        main_container = ttk.Frame(parent)
         main_container.pack(fill="both", expand=True)
 
-        canvas_help = tk.Canvas(main_container, highlightthickness=0)
-        scrollbar_help = ttk.Scrollbar(main_container, orient="vertical", command=canvas_help.yview)
-        scrollable_help = ttk.Frame(canvas_help)
+        canvas = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
 
-        scrollable_help.bind(
+        scrollable.bind(
             "<Configure>",
-            lambda e: canvas_help.configure(scrollregion=canvas_help.bbox("all"))
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
-        canvas_help.create_window((0, 0), window=scrollable_help, anchor="nw")
-        canvas_help.configure(yscrollcommand=scrollbar_help.set)
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas_help.pack(side="left", fill="both", expand=True)
-        scrollbar_help.pack(side="right", fill="y")
-
-        scroll_hint = ttk.Label(tab_help, text="⬇ Scroll down for more options ⬇",
-                               font=("", 9, "bold"), foreground="blue",
-                               background="#f0f0f0", anchor="center")
-        scroll_hint.pack(side="bottom", fill="x", pady=2)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
         def _on_mousewheel(event):
-            canvas_help.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas_help.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # About section
-        frame_info = ttk.LabelFrame(scrollable_help, text="About", padding=10)
+        frame_info = ttk.LabelFrame(scrollable, text="About", padding=10)
         frame_info.pack(fill="x", padx=10, pady=5)
 
         info_text = (
@@ -125,41 +137,45 @@ class NormalMapProcessorGUI:
             "better, just use my default settings. On the Settings tab, the only thing\n"
             "I'd vary is setting Scale Factor from 1.0 to 0.5 if you want extra performance.\n\n"
             "⚠ ALWAYS DO A DRY RUN.\n\n"
-            "IMPORTANT ASSUMPTIONS:\n"
+            "IMPORTANT NOTES:\n"
             "1. Your normal maps use DirectX-style (G=Y-), Not OpenGL-style (G=Y+).\n"
             "   I cannot auto-detect inverted Y - use the checkbox if needed.\n\n"
-            "2. You have UNCOMPRESSED normal maps. This tool is designed to compress\n"
-            "   uncompressed textures.\n\n"
-            "   Already using BC3/BC1? The main thing to avoid is accidentally converting\n"
-            "   to larger formats when NOT resizing:\n"
-            "   • BC3 → BGRA: 4x larger files with no quality improvement\n"
-            "   • BC3 → BC5: Same file size, but artifacts remain (no benefit)\n"
-            "   • BC3 → BC3: Surprisingly pretty harmless! \"double compression\" produces\n"
-            "     nearly identical results (e.g. PSNR ~64 dB, MSE ~0.03)\n\n"
-            "   Why does the tool reprocess BC3/BC1 files? It fixes technical issues:\n"
-            "   • Regenerates mipmap chains (textures may have bad/missing mipmaps)\n"
-            "   • Reconstructs Z channels (this is sometimes missing)\n\n"
-            "   Valid reasons to process already-compressed textures:\n"
-            "   • Resizing (downscaling/upscaling) - the main use case\n"
-            "   • Fixing broken mipmaps or Z channels - surprisingly common\n\n"
-            "   Want to restore quality from heavily compressed BC3/BC1? You can't \"upgrade\"\n"
-            "   compressed textures by converting formats. Instead:\n"
-            "   1. Use chaiNNer with artifact removal models to restore detail\n"
-            "   2. Then use this tool to recompress to your preferred format\n\n"
-            "   Note for regular users: These are edge cases mostly relevant to mod authors.\n"
-            "   If you just want vastly better performance with very little quality loss,\n"
-            "   the default settings will work fine.\n\n"
-            "   Still unsure? Use \"Dry Run\" to see what will happen before processing.\n"
-            "   It has a file by file breakdown and statistics at the bottom.\n\n"
+            "2. This tool is designed for:\n"
+            "   • Compressing uncompressed textures (BGRA/BGR) - the primary use case\n"
+            "   • \"Smart\" file optimization on already-compressed textures to avoid wasting space\n"
+            "   • Fixing common errors (mislabeled formats, wasted alpha channels, broken mipmaps)\n"
+            "   • Being minimally invasive while being highly configurable\n"
+            "   • Running very fast with parallel processing support\n\n"
             "3. Compression and downscaling are LOSSY (you lose information). However,\n"
             "   75-95% space savings is nearly always worth it.\n\n"
-            "4. Z-channel reconstruction: Many normal map generators output 2-channel\n"
-            "   (RG only) maps, expecting BC5/ATI2 or R8G8 formats. OpenMW will ONLY\n"
-            "   compute Z on-the-fly for BC5/ATI2 and R8G8 formats. For all other\n"
-            "   formats (BC3/DXT5, BC1/DXT1, BGRA, BGR), you MUST have Z pre-computed\n"
-            "   in the file. This tool can reconstruct Z = sqrt(1 - X² - Y²) for those\n"
-            "   formats that need RGB stored explicitly (enabled by default, toggle in\n"
-            "   settings if you already have Z computed).\n\n"
+            "WORKING WITH ALREADY-COMPRESSED TEXTURES:\n"
+            "Already using BC3/BC1? The tool intelligently handles compressed textures:\n"
+            "• Avoids accidentally converting to larger formats when NOT resizing\n"
+            "  (BC3 → BGRA would be 4x larger with no benefit)\n"
+            "• Preserves good compressed formats when not downscaling (enabled by default)\n"
+            "• Auto-detects and fixes mislabeled textures (e.g., _NH files in BC5/BC1)\n"
+            "• Auto-optimizes wasted space (e.g., N textures in BC3 → BC1 for half the size)\n"
+            "• Regenerates mipmap chains (textures may have bad/missing mipmaps)\n"
+            "• Reconstructs Z channels (sometimes missing or incorrect)\n\n"
+            "Note on Recompression: Usually pretty harmless! \"Double compression\"\n"
+            "produces nearly identical results (e.g., PSNR ~64 dB, MSE ~0.03) as long as\n"
+            "no intermediate operation (e.g., resizing, color changes) is occurring.\n\n"
+            "Want to avoid reprocessing entirely? Enable \"Allow well-compressed textures\n"
+            "to passthrough\" in Settings > Smart Format Handling.\n\n"
+            "Valid reasons to process already-compressed textures:\n"
+            "• Resizing (downscaling/upscaling) - the main use case\n"
+            "• Fixing broken mipmaps or Z channels - surprisingly common\n"
+            "• Removing wasted space (N textures with unused alpha channels)\n\n"
+            "Want to restore quality from heavily compressed BC3/BC1? You can't \"upgrade\"\n"
+            "compressed textures by converting formats. Instead:\n"
+            "1. Use chaiNNer with artifact removal models to restore detail\n"
+            "2. Then use this tool to recompress to your preferred format\n\n"
+            "FOR REGULAR USERS:\n"
+            "These are edge cases mostly relevant to mod authors. If you just want vastly\n"
+            "better performance with very little quality loss, the default settings will\n"
+            "work fine.\n\n"
+            "Still unsure? Use \"Dry Run\" to see what will happen before processing.\n"
+            "It has a file-by-file breakdown and statistics at the bottom.\n\n"
             "FINAL CAVEAT:\n"
             "This is all my personal opinion and experience. I have compressed a lot of\n"
             "normal maps for a variety of games and done probably an unhealthy amount of\n"
@@ -183,8 +199,32 @@ class NormalMapProcessorGUI:
         ttk.Label(links_frame, text="|").pack(side="left", padx=5)
         self._create_link(links_frame, "DXT Artifact Removal", "https://openmodeldb.info/models/1x-DEDXT")
 
+    def _create_smart_format_doc(self, parent):
+        """Create the smart format decision flow documentation sub-tab"""
+        main_container = ttk.Frame(parent)
+        main_container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
+
+        scrollable.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
         # Smart Format Handling Decision Flow
-        frame_decision_flow = ttk.LabelFrame(scrollable_help, text="Smart Format Handling - Decision Flow", padding=10)
+        frame_decision_flow = ttk.LabelFrame(scrollable, text="Smart Format Handling - Decision Flow", padding=10)
         frame_decision_flow.pack(fill="x", padx=10, pady=5)
 
         decision_flow_text = (
@@ -236,8 +276,32 @@ class NormalMapProcessorGUI:
                                         font=("Courier New", 8), wraplength=self.WRAPLENGTH)
         decision_flow_label.pack(anchor="w")
 
+    def _create_formats_doc(self, parent):
+        """Create the format reference documentation sub-tab"""
+        main_container = ttk.Frame(parent)
+        main_container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
+
+        scrollable.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
         # Format Reference
-        frame_format_ref = ttk.LabelFrame(scrollable_help, text="Format Reference", padding=10)
+        frame_format_ref = ttk.LabelFrame(scrollable, text="Format Reference", padding=10)
         frame_format_ref.pack(fill="x", padx=10, pady=5)
 
         format_ref_text = (
@@ -273,7 +337,7 @@ class NormalMapProcessorGUI:
                          font_size=8)
 
         # File Size Comparison
-        frame_size_comp = ttk.LabelFrame(scrollable_help, text="File Size Comparison (with mipmaps)", padding=10)
+        frame_size_comp = ttk.LabelFrame(scrollable, text="File Size Comparison (with mipmaps)", padding=10)
         frame_size_comp.pack(fill="x", padx=10, pady=5)
 
         size_comp_text = (
@@ -291,36 +355,48 @@ class NormalMapProcessorGUI:
         size_comp_label.pack(anchor="w")
 
     def _create_settings_tab(self, tab_settings):
-        """Create the settings tab with all configuration options"""
-        main_container = ttk.Frame(tab_settings)
+        """Create the settings tab with nested sub-tabs"""
+        settings_notebook = ttk.Notebook(tab_settings)
+        settings_notebook.pack(fill="both", expand=True, padx=5, pady=5)
+
+        tab_basic = ttk.Frame(settings_notebook)
+        tab_advanced = ttk.Frame(settings_notebook)
+        tab_smart_format = ttk.Frame(settings_notebook)
+
+        settings_notebook.add(tab_basic, text="Basic Settings")
+        settings_notebook.add(tab_advanced, text="Advanced")
+        settings_notebook.add(tab_smart_format, text="Smart Format Handling")
+
+        self._create_basic_settings(tab_basic)
+        self._create_advanced_settings(tab_advanced)
+        self._create_smart_format_settings(tab_smart_format)
+
+    def _create_basic_settings(self, parent):
+        """Create basic settings sub-tab"""
+        main_container = ttk.Frame(parent)
         main_container.pack(fill="both", expand=True)
 
-        canvas_settings = tk.Canvas(main_container, highlightthickness=0)
-        scrollbar_settings = ttk.Scrollbar(main_container, orient="vertical", command=canvas_settings.yview)
-        scrollable_settings = ttk.Frame(canvas_settings)
+        canvas = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
 
-        scrollable_settings.bind(
+        scrollable.bind(
             "<Configure>",
-            lambda e: canvas_settings.configure(scrollregion=canvas_settings.bbox("all"))
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
-        canvas_settings.create_window((0, 0), window=scrollable_settings, anchor="nw")
-        canvas_settings.configure(yscrollcommand=scrollbar_settings.set)
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
-        canvas_settings.pack(side="left", fill="both", expand=True)
-        scrollbar_settings.pack(side="right", fill="y")
-
-        scroll_hint = ttk.Label(tab_settings, text="⬇ Scroll down for more options ⬇",
-                               font=("", 9, "bold"), foreground="blue",
-                               background="#f0f0f0", anchor="center")
-        scroll_hint.pack(side="bottom", fill="x", pady=2)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
 
         def _on_mousewheel(event):
-            canvas_settings.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas_settings.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # Directory Info
-        frame_dir_info = ttk.LabelFrame(scrollable_settings, text="⚠ Important: Directory Structure", padding=10)
+        frame_dir_info = ttk.LabelFrame(scrollable, text="⚠ Important: Directory Structure", padding=10)
         frame_dir_info.pack(fill="x", padx=10, pady=5)
 
         dir_info_text = (
@@ -335,19 +411,19 @@ class NormalMapProcessorGUI:
                  font=("", 8), wraplength=self.WRAPLENGTH).pack(anchor="w")
 
         # Input Directory
-        frame_input = ttk.LabelFrame(scrollable_settings, text="Input Directory", padding=10)
+        frame_input = ttk.LabelFrame(scrollable, text="Input Directory", padding=10)
         frame_input.pack(fill="x", padx=10, pady=5)
         ttk.Entry(frame_input, textvariable=self.input_dir, width=50).pack(side="left", padx=5)
         ttk.Button(frame_input, text="Browse...", command=self.browse_input).pack(side="left")
 
         # Output Directory
-        frame_output = ttk.LabelFrame(scrollable_settings, text="Output Directory", padding=10)
+        frame_output = ttk.LabelFrame(scrollable, text="Output Directory", padding=10)
         frame_output.pack(fill="x", padx=10, pady=5)
         ttk.Entry(frame_output, textvariable=self.output_dir, width=50).pack(side="left", padx=5)
         ttk.Button(frame_output, text="Browse...", command=self.browse_output).pack(side="left")
 
         # Format Options
-        frame_formats = ttk.LabelFrame(scrollable_settings, text="Format Options", padding=10)
+        frame_formats = ttk.LabelFrame(scrollable, text="Format Options", padding=10)
         frame_formats.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(frame_formats, text="_N.dds format:").grid(row=0, column=0, sticky="w", pady=5)
@@ -365,7 +441,7 @@ class NormalMapProcessorGUI:
                  font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
 
         # Downscale Options
-        frame_resize = ttk.LabelFrame(scrollable_settings, text="Downscale Options", padding=10)
+        frame_resize = ttk.LabelFrame(scrollable, text="Downscale Options", padding=10)
         frame_resize.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(frame_resize, text="Downscale Method:").grid(row=0, column=0, sticky="w", pady=5)
@@ -405,8 +481,32 @@ class NormalMapProcessorGUI:
         ttk.Label(frame_resize, text="Recommended: 256 for downscaling",
                  font=("", 8, "italic")).grid(row=5, column=2, sticky="w", padx=(0, 0), columnspan=2)
 
+    def _create_advanced_settings(self, parent):
+        """Create advanced settings sub-tab"""
+        main_container = ttk.Frame(parent)
+        main_container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
+
+        scrollable.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
         # Normal Map Options
-        frame_normal_opts = ttk.LabelFrame(scrollable_settings, text="Normal Map Options", padding=10)
+        frame_normal_opts = ttk.LabelFrame(scrollable, text="Normal Map Options", padding=10)
         frame_normal_opts.pack(fill="x", padx=10, pady=5)
 
         ttk.Checkbutton(frame_normal_opts, text="Convert OpenGL to DirectX (Invert Y channel)",
@@ -434,7 +534,7 @@ class NormalMapProcessorGUI:
                  font=("", 8), wraplength=600, justify="left").grid(row=7, column=0, columnspan=2, sticky="w", pady=2)
 
         # Small Texture Handling
-        frame_small_tex = ttk.LabelFrame(scrollable_settings, text="Small Texture Handling", padding=10)
+        frame_small_tex = ttk.LabelFrame(scrollable, text="Small Texture Handling", padding=10)
         frame_small_tex.pack(fill="x", padx=10, pady=5)
 
         ttk.Checkbutton(frame_small_tex, text="Override format for small textures (recommended)",
@@ -462,8 +562,65 @@ class NormalMapProcessorGUI:
                  text="⚠ Note: Thresholds are checked AFTER resizing. Set to 0 to disable override for that type.",
                  font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
+        # Parallel Processing Settings
+        frame_parallel = ttk.LabelFrame(scrollable, text="Parallel Processing", padding=10)
+        frame_parallel.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_parallel, text="Enable parallel processing (recommended for speedy processing.)",
+                       variable=self.enable_parallel).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_parallel,
+                 text=f"Parallel processing uses multiple CPU cores to process files simultaneously. Detected: {cpu_count()} cores",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_parallel, text="Max workers:").grid(row=2, column=0, sticky="w", pady=5, padx=(20, 0))
+        workers_combo = ttk.Combobox(frame_parallel, textvariable=self.max_workers,
+                                     values=list(range(1, cpu_count() + 1)), state="readonly", width=15)
+        workers_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_parallel, text=f"(CPU cores to use, recommended: {max(1, cpu_count() - 1)})",
+                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
+
+        ttk.Label(frame_parallel, text="Chunk size (MB):").grid(row=3, column=0, sticky="w", pady=5, padx=(20, 0))
+        chunk_combo = ttk.Combobox(frame_parallel, textvariable=self.chunk_size_mb,
+                                   values=[25, 50, 75, 100, 150, 200], state="readonly", width=15)
+        chunk_combo.grid(row=3, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_parallel, text="(Total filesize per batch, recommended: 50-100MB)",
+                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w")
+
+        ttk.Label(frame_parallel,
+                 text="⚠ Chunking groups files by total size to balance I/O and CPU usage across workers.\n"
+                      "Larger chunks = fewer context switches, but less granular progress.\n"
+                      "Smaller chunks = more responsive progress, but more overhead.\n\n"
+                      "If your computer becomes unresponsive, lower the CPU cores used or make the chunks smaller.\n"
+                      "This is pretty unlikely though. It's worth making 15 minutes of processing take only 15 seconds.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
+
+    def _create_smart_format_settings(self, parent):
+        """Create smart format handling sub-tab"""
+        main_container = ttk.Frame(parent)
+        main_container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(main_container, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(main_container, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
+
+        scrollable.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
         # Smart Format Handling
-        frame_smart_format = ttk.LabelFrame(scrollable_settings, text="Smart Format Handling", padding=10)
+        frame_smart_format = ttk.LabelFrame(scrollable, text="Smart Format Handling", padding=10)
         frame_smart_format.pack(fill="x", padx=10, pady=5)
 
         ttk.Checkbutton(frame_smart_format, text="Preserve compressed format when not downscaling (recommended)",
@@ -505,39 +662,6 @@ class NormalMapProcessorGUI:
                       "4. Auto-optimize formats with wasted alpha\n"
                       "5. Small texture override (only for uncompressed sources)",
                  font=("", 8), wraplength=600, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=(5, 2))
-
-        # Parallel Processing Settings
-        frame_parallel = ttk.LabelFrame(scrollable_settings, text="Parallel Processing", padding=10)
-        frame_parallel.pack(fill="x", padx=10, pady=5)
-
-        ttk.Checkbutton(frame_parallel, text="Enable parallel processing (recommended for speedy processing.)",
-                       variable=self.enable_parallel).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
-
-        ttk.Label(frame_parallel,
-                 text=f"Parallel processing uses multiple CPU cores to process files simultaneously. Detected: {cpu_count()} cores",
-                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
-
-        ttk.Label(frame_parallel, text="Max workers:").grid(row=2, column=0, sticky="w", pady=5, padx=(20, 0))
-        workers_combo = ttk.Combobox(frame_parallel, textvariable=self.max_workers,
-                                     values=list(range(1, cpu_count() + 1)), state="readonly", width=15)
-        workers_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(frame_parallel, text=f"(CPU cores to use, recommended: {max(1, cpu_count() - 1)})",
-                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
-
-        ttk.Label(frame_parallel, text="Chunk size (MB):").grid(row=3, column=0, sticky="w", pady=5, padx=(20, 0))
-        chunk_combo = ttk.Combobox(frame_parallel, textvariable=self.chunk_size_mb,
-                                   values=[25, 50, 75, 100, 150, 200], state="readonly", width=15)
-        chunk_combo.grid(row=3, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(frame_parallel, text="(Total filesize per batch, recommended: 50-100MB)",
-                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w")
-
-        ttk.Label(frame_parallel,
-                 text="⚠ Chunking groups files by total size to balance I/O and CPU usage across workers.\n"
-                      "Larger chunks = fewer context switches, but less granular progress.\n"
-                      "Smaller chunks = more responsive progress, but more overhead.\n\n"
-                      "If your computer becomes unresponsive, lower the CPU cores used or make the chunks smaller.\n"
-                      "This is pretty unlikely though. It's worth making 15 minutes of processing take only 15 seconds.",
-                 font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
     def _create_process_tab(self, tab_process):
         """Create the processing tab with progress log and controls"""
@@ -611,7 +735,7 @@ class NormalMapProcessorGUI:
         frame_version.pack(fill="x", padx=10, pady=5)
 
         version_text = (
-            "Version 0.5\n"
+            "Version 0.6\n"
             "Features:\n"
             "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
             "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
