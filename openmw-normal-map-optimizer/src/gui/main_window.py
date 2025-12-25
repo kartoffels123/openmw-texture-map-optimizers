@@ -1222,10 +1222,14 @@ class NormalMapProcessorGUI:
             self.progress_bar["maximum"] = total_files
             self.progress_bar["value"] = 0
 
+            # Batch GUI updates for performance
+            last_update_time = time.time()
+            last_update_count = 0
+            pending_logs = []
+
             # Define progress callback
             def progress_callback(current, total, result: ProcessingResult):
-                self.progress_bar["value"] = current
-                self.progress_label.config(text=f"Processed {current}/{total} files")
+                nonlocal last_update_time, last_update_count, pending_logs
 
                 self.total_input_size += result.input_size
 
@@ -1239,17 +1243,38 @@ class NormalMapProcessorGUI:
                         size_change = result.output_size - result.input_size
                         size_change_str = f"+{format_size(size_change)}" if size_change > 0 else format_size(size_change)
 
-                        self.log(f"✓ {result.relative_path}")
-                        self.log(f"  {orig_w}×{orig_h} {result.orig_format} → {new_w}×{new_h} {result.new_format} | "
+                        pending_logs.append(f"✓ {result.relative_path}")
+                        pending_logs.append(f"  {orig_w}×{orig_h} {result.orig_format} → {new_w}×{new_h} {result.new_format} | "
                                 f"{format_size(result.input_size)} → {format_size(result.output_size)} ({size_change_str})")
                     else:
-                        self.log(f"✓ Completed: {result.relative_path}")
+                        pending_logs.append(f"✓ Completed: {result.relative_path}")
                 else:
                     self.failed_count += 1
                     error_msg = result.error_msg or 'Unknown error'
-                    self.log(f"✗ Failed: {result.relative_path} - {error_msg}")
+                    pending_logs.append(f"✗ Failed: {result.relative_path} - {error_msg}")
 
-                self.root.update_idletasks()
+                # Update GUI periodically (every 2 seconds)
+                current_time = time.time()
+                should_update = (
+                    current_time - last_update_time >= 2.0 or  # Every 2 seconds
+                    current == total  # Always update on last file
+                )
+
+                if should_update:
+                    # Flush pending logs
+                    if pending_logs:
+                        self.log('\n'.join(pending_logs))
+                        pending_logs.clear()
+
+                    # Update progress
+                    self.progress_bar["value"] = current
+                    self.progress_label.config(text=f"Processed {current}/{total} files")
+
+                    # Update UI
+                    self.root.update_idletasks()
+
+                    last_update_time = current_time
+                    last_update_count = current
 
             # Process files
             if settings.enable_parallel and total_files > 1:
