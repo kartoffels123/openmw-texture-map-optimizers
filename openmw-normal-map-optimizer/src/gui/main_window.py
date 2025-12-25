@@ -11,13 +11,15 @@ import time
 from pathlib import Path
 from multiprocessing import cpu_count
 
-from optimizer_core import (
+from src.core import (
     NormalMapProcessor,
     ProcessingSettings,
     ProcessingResult,
     AnalysisResult,
     format_size,
-    format_time
+    format_time,
+    get_parser_stats,
+    reset_parser_stats
 )
 
 
@@ -735,7 +737,7 @@ class NormalMapProcessorGUI:
         frame_version.pack(fill="x", padx=10, pady=5)
 
         version_text = (
-            "Version 0.6\n"
+            "Version 0.7\n"
             "Features:\n"
             "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
             "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
@@ -747,16 +749,22 @@ class NormalMapProcessorGUI:
             "  • Auto-fix mislabeled NH→N textures (BGR/BC5/BC1 formats)\n"
             "  • Auto-optimize N textures with unused alpha (BGRA→user N format, BC3→BC1)\n"
             "  • Comprehensive warning system for format issues\n"
-            "  • Dry run analysis with size projections and warnings\n"
+            "  • Dry run analysis with size projections and detailed conversion breakdown\n"
             "  • Detailed processing logs and statistics\n"
             "  • Export analysis reports\n"
             "  • Parallel processing (multi-core support for faster batch operations)\n\n"
-            "Version 0.5 Updates:\n"
-            "  • NEW: Smart format handling preserves compressed formats when not downscaling\n"
-            "  • NEW: Auto-detection and fixing of mislabeled NH textures\n"
-            "  • NEW: Auto-optimization of N textures with wasted alpha channels\n"
-            "  • NEW: Comprehensive warning system shows potential issues before processing\n"
-            "  • NEW: ~50% faster analysis (optimized subprocess calls)\n\n"
+            "Version 0.7 Updates:\n"
+            "  • NEW: ~100x faster dry run analysis (6,000 files in <1 second vs 1 minute)\n"
+            "  • NEW: Direct DDS header parsing eliminates subprocess overhead\n"
+            "  • NEW: Optimized file discovery for large directories (only scans _n.dds/_nh.dds)\n"
+            "  • NEW: Grouped conversion summary shows format/resize changes clearly\n"
+            "  • NEW: Reorganized codebase with cleaner structure (src/core, src/gui)\n"
+            "  • NEW: Support for BC4, BC6H, BC7, and many additional DDS formats\n\n"
+            "Version 0.6 Updates:\n"
+            "  • Smart format handling preserves compressed formats when not downscaling\n"
+            "  • Auto-detection and fixing of mislabeled NH textures\n"
+            "  • Auto-optimization of N textures with wasted alpha channels\n"
+            "  • Comprehensive warning system shows potential issues before processing\n\n"
             "Known Issues:\n"
             "  • The 'Preserve compressed format' option (enabled by default) prevents unnecessary\n"
             "    format conversions when not downscaling. However, all files are still reprocessed\n"
@@ -888,6 +896,7 @@ class NormalMapProcessorGUI:
         """Run analysis using core processor"""
         start_time = time.time()
         try:
+            reset_parser_stats()  # Reset statistics at start of dry run
             settings = self.get_settings()
             processor = NormalMapProcessor(settings)
 
@@ -972,20 +981,42 @@ class NormalMapProcessorGUI:
                             (result.relative_path, result.width, result.height, result.format)
                         )
 
-                self.log(f"[{i}/{len(results)}] Analyzing: {result.relative_path}")
-                self.log(f"  Current: {result.format}, {result.width}x{result.height}, {format_size(result.file_size)}")
-                self.log(f"  Projected: {result.target_format}, {result.new_width}x{result.new_height}, {format_size(result.projected_size)}")
-
-                # Collect and display warnings/info for this file
+                # Collect warnings/info for this file (log summary later, not per-file)
                 if result.warnings:
                     for warning in result.warnings:
                         # Categorize as info or warning
                         if any(keyword in warning for keyword in ['auto-fixed', 'auto-optimized', 'preserved']):
-                            self.log(f"  ℹ {warning}")
                             all_info_messages.append((result.relative_path, warning))
                         else:
-                            self.log(f"  ⚠ {warning}")
                             all_warnings.append((result.relative_path, warning))
+
+            # Build detailed conversion summary
+            format_conversions = {}  # (source_format, target_format) -> count
+            resize_conversions = {}  # (original_size, new_size) -> count
+            combined_conversions = {}  # (source_fmt, target_fmt, resize_type) -> [file_list]
+
+            for result in results:
+                if result.error:
+                    continue
+
+                # Track format conversions
+                if result.format != result.target_format:
+                    key = (result.format, result.target_format)
+                    format_conversions[key] = format_conversions.get(key, 0) + 1
+
+                # Track resize conversions
+                if result.width and result.new_width:
+                    if (result.width != result.new_width) or (result.height != result.new_height):
+                        resize_key = (f"{result.width}x{result.height}", f"{result.new_width}x{result.new_height}")
+                        resize_conversions[resize_key] = resize_conversions.get(resize_key, 0) + 1
+
+                # Track combined conversions for detailed breakdown
+                will_resize = (result.new_width != result.width) or (result.new_height != result.height)
+                resize_type = "resize" if will_resize else "no_resize"
+                combo_key = (result.format, result.target_format, resize_type)
+                if combo_key not in combined_conversions:
+                    combined_conversions[combo_key] = []
+                combined_conversions[combo_key].append(result.relative_path)
 
             # Display stats
             self.log("\n=== Current State ===")
@@ -993,9 +1024,51 @@ class NormalMapProcessorGUI:
             if len(results) > 0:
                 self.log(f"Average size per file: {format_size(total_current_size // len(results))}")
 
-            self.log("\n=== Format Breakdown ===")
+            self.log("\n=== Format Breakdown (Current) ===")
             for fmt, stats in sorted(format_stats.items()):
                 self.log(f"{fmt}: {stats['count']} files, {format_size(stats['size'])} total")
+
+            # Show format conversion summary
+            if format_conversions:
+                self.log("\n=== Format Conversions ===")
+                for (src_fmt, dst_fmt), count in sorted(format_conversions.items(), key=lambda x: -x[1]):
+                    self.log(f"{src_fmt} → {dst_fmt}: {count} files")
+
+            # Show resize summary
+            if resize_conversions:
+                self.log("\n=== Resolution Changes ===")
+                # Group by scale factor
+                scale_groups = {}
+                for (src_res, dst_res), count in resize_conversions.items():
+                    src_w, src_h = map(int, src_res.split('x'))
+                    dst_w, dst_h = map(int, dst_res.split('x'))
+                    scale = dst_w / src_w
+                    scale_str = f"{scale:.2f}x" if scale != 1.0 else "unchanged"
+                    if scale_str not in scale_groups:
+                        scale_groups[scale_str] = []
+                    scale_groups[scale_str].append((src_res, dst_res, count))
+
+                for scale_str, conversions in sorted(scale_groups.items()):
+                    total_in_group = sum(c[2] for c in conversions)
+                    self.log(f"\n{scale_str} scaling ({total_in_group} files):")
+                    for src_res, dst_res, count in sorted(conversions, key=lambda x: -x[2]):
+                        self.log(f"  {src_res} → {dst_res}: {count} files")
+
+            # Show detailed combined breakdown
+            if combined_conversions:
+                self.log("\n=== Detailed Conversion Breakdown ===")
+                for (src_fmt, dst_fmt, resize_type), files in sorted(combined_conversions.items(), key=lambda x: -len(x[1])):
+                    count = len(files)
+                    resize_label = " + resize" if resize_type == "resize" else ""
+                    self.log(f"{src_fmt} → {dst_fmt}{resize_label}: {count} files")
+                    # Show first 3 examples
+                    if count <= 3:
+                        for f in files:
+                            self.log(f"    • {f}")
+                    else:
+                        for f in files[:3]:
+                            self.log(f"    • {f}")
+                        self.log(f"    ... and {count - 3} more")
 
             # Show actions
             self.log("\n=== Actions to be Taken ===")
@@ -1101,6 +1174,11 @@ class NormalMapProcessorGUI:
             if len(results) > 0:
                 avg_time = elapsed_time / len(results)
                 self.log(f"Average per file: {format_time(avg_time)}")
+
+            # Show parser statistics (only if there were fallbacks)
+            fast_hits, texdiag_fallbacks = get_parser_stats()
+            if texdiag_fallbacks > 0:
+                self.log(f"\nNote: {texdiag_fallbacks} file(s) used texdiag fallback (fast parser failed)")
 
             messagebox.showinfo("Dry Run Complete",
                 f"Current: {format_size(total_current_size)}\n"
