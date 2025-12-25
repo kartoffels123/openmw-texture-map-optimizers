@@ -6,6 +6,7 @@ Handles file processing, analysis, and conversion independently of UI.
 from pathlib import Path
 import subprocess
 import re
+import shutil
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import cpu_count
 from dataclasses import dataclass
@@ -38,6 +39,10 @@ class ProcessingSettings:
     enable_parallel: bool = True
     max_workers: int = max(1, cpu_count() - 1)
     chunk_size_mb: int = 75
+    preserve_compressed_format: bool = True
+    auto_fix_nh_to_n: bool = True
+    auto_optimize_n_alpha: bool = True
+    allow_compressed_passthrough: bool = False
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for multiprocessing"""
@@ -54,7 +59,11 @@ class ProcessingSettings:
             'use_small_texture_override': self.use_small_texture_override,
             'small_nh_threshold': self.small_nh_threshold,
             'small_n_threshold': self.small_n_threshold,
-            'resize_method': self.resize_method
+            'resize_method': self.resize_method,
+            'preserve_compressed_format': self.preserve_compressed_format,
+            'auto_fix_nh_to_n': self.auto_fix_nh_to_n,
+            'auto_optimize_n_alpha': self.auto_optimize_n_alpha,
+            'allow_compressed_passthrough': self.allow_compressed_passthrough
         }
 
 
@@ -86,6 +95,11 @@ class AnalysisResult:
     target_format: Optional[str] = None
     projected_size: int = 0
     error: Optional[str] = None
+    warnings: List[str] = None
+
+    def __post_init__(self):
+        if self.warnings is None:
+            self.warnings = []
 
 
 # Constants
@@ -106,8 +120,8 @@ FILTER_MAP = {
 
 
 # Static helper functions for multiprocessing workers
-def _get_dimensions_static(input_dds: Path) -> Optional[Tuple[int, int]]:
-    """Get dimensions from DDS file. Returns (width, height) or None"""
+def _get_dds_info_static(input_dds: Path) -> Tuple[Optional[Tuple[int, int]], str]:
+    """Get dimensions and format from DDS file in a single call. Returns ((width, height), format)"""
     try:
         result = subprocess.run(
             [TEXDIAG_EXE, "info", str(input_dds)],
@@ -116,30 +130,31 @@ def _get_dimensions_static(input_dds: Path) -> Optional[Tuple[int, int]]:
 
         width_match = re.search(r'width\s*=\s*(\d+)', result.stdout)
         height_match = re.search(r'height\s*=\s*(\d+)', result.stdout)
+        format_match = re.search(r'format\s*=\s*(\S+)', result.stdout)
 
+        dimensions = None
         if width_match and height_match:
-            return int(width_match.group(1)), int(height_match.group(1))
+            dimensions = (int(width_match.group(1)), int(height_match.group(1)))
+
+        format_str = format_match.group(1) if format_match else "UNKNOWN"
+
+        return dimensions, format_str
     except Exception:
         pass
 
-    return None
+    return None, "UNKNOWN"
+
+
+def _get_dimensions_static(input_dds: Path) -> Optional[Tuple[int, int]]:
+    """Get dimensions from DDS file. Returns (width, height) or None"""
+    dimensions, _ = _get_dds_info_static(input_dds)
+    return dimensions
 
 
 def _get_format_static(input_dds: Path) -> str:
     """Get format from DDS file. Returns format string or 'UNKNOWN'"""
-    try:
-        result = subprocess.run(
-            [TEXDIAG_EXE, "info", str(input_dds)],
-            capture_output=True, text=True, timeout=30
-        )
-
-        format_match = re.search(r'format\s*=\s*(\S+)', result.stdout)
-        if format_match:
-            return format_match.group(1)
-    except Exception:
-        pass
-
-    return "UNKNOWN"
+    _, format_str = _get_dds_info_static(input_dds)
+    return format_str
 
 
 def _calculate_new_dimensions_static(orig_width: int, orig_height: int, settings: dict) -> Tuple[int, int]:
@@ -175,26 +190,131 @@ def _process_normal_map_static(input_dds: Path, output_dds: Path, is_nh: bool, s
     try:
         output_dds.parent.mkdir(parents=True, exist_ok=True)
 
-        dimensions = _get_dimensions_static(input_dds)
+        # Get both dimensions and format in a single subprocess call
+        dimensions, format_name = _get_dds_info_static(input_dds)
         if not dimensions:
             return False
+
+        # Check for compressed passthrough (fast path - just copy the file)
+        # Only applies if texture is compressed AND correctly formatted (or fixable via rename)
+        if settings.get('allow_compressed_passthrough', False):
+            format_to_standard = {
+                'BC5_UNORM': 'BC5/ATI2',
+                'BC3_UNORM': 'BC3/DXT5',
+                'BC1_UNORM': 'BC1/DXT1'
+            }
+            current_format_standard = format_to_standard.get(format_name, None)
+
+            if current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']:
+                # Check if this compressed texture is "good" for its type
+                can_passthrough = False
+                needs_rename = False
+
+                # Check for mislabeling (NH textures without alpha)
+                if is_nh and settings.get('auto_fix_nh_to_n', True):
+                    # NH texture in BC5/BC1 is mislabeled
+                    if current_format_standard in ['BC5/ATI2', 'BC1/DXT1']:
+                        can_passthrough = True  # Can copy as-is
+                        needs_rename = True  # But rename _NH → _N
+                    elif current_format_standard == 'BC3/DXT5':
+                        can_passthrough = True  # BC3 is correct for NH
+                        needs_rename = False
+                else:
+                    # N texture - check for wasted alpha
+                    if settings.get('auto_optimize_n_alpha', True):
+                        if current_format_standard == 'BC3/DXT5':
+                            can_passthrough = False  # BC3 N has wasted alpha - must optimize to BC1
+                        else:
+                            can_passthrough = True  # BC5 or BC1 are good for N
+                    else:
+                        can_passthrough = True  # Auto-optimize disabled, accept as-is
+
+                if can_passthrough:
+                    # Handle renaming for mislabeled NH→N textures
+                    if needs_rename:
+                        # Change _nh.dds → _n.dds in the output path
+                        output_path_str = str(output_dds)
+                        if output_path_str.lower().endswith('_nh.dds'):
+                            corrected_output = Path(output_path_str[:-7] + '_n.dds')
+                            corrected_output.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(input_dds, corrected_output)
+                            return True
+                    else:
+                        # Copy with same name
+                        shutil.copy2(input_dds, output_dds)
+                        return True
 
         orig_width, orig_height = dimensions
         new_width, new_height = _calculate_new_dimensions_static(orig_width, orig_height, settings)
 
-        # Determine target format
+        # Check if we're resizing
+        will_resize = (new_width != orig_width) or (new_height != orig_height)
+
+        # Map format to standard names
+        format_to_standard = {
+            'BC5_UNORM': 'BC5/ATI2',
+            'BC3_UNORM': 'BC3/DXT5',
+            'BC1_UNORM': 'BC1/DXT1',
+            'B8G8R8A8_UNORM': 'BGRA',
+            'B8G8R8X8_UNORM': 'BGR'
+        }
+        current_format_standard = format_to_standard.get(format_name, format_name)
+
+        # Determine target format with smart format handling
         target_format = settings['nh_format'] if is_nh else settings['n_format']
 
+        # Auto-fix: NH-labeled textures with no-alpha formats should be treated as N
+        if is_nh and settings['auto_fix_nh_to_n']:
+            if current_format_standard in ['BGR', 'BC5/ATI2', 'BC1/DXT1']:
+                # This is really an N texture, use N format
+                target_format = settings['n_format']
+                is_nh = False  # Update for later logic
+
+        # Preserve compressed format when not resizing (but not if it needs optimization)
+        should_preserve = False
+        if settings['preserve_compressed_format'] and not will_resize:
+            compressed_formats = ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']
+            if current_format_standard in compressed_formats:
+                # Check if this format is appropriate for the texture type
+                if is_nh:
+                    # NH textures: BC3 is good, BC5/BC1 have no alpha
+                    if current_format_standard == 'BC3/DXT5':
+                        should_preserve = True
+                else:
+                    # N textures: BC5 and BC1 are good, BC3 has wasted alpha
+                    if current_format_standard in ['BC5/ATI2', 'BC1/DXT1']:
+                        should_preserve = True
+
+                if should_preserve:
+                    target_format = current_format_standard
+
+        # Auto-optimize: N textures with alpha formats can be optimized (only if not preserved)
+        if not is_nh and settings['auto_optimize_n_alpha'] and not should_preserve:
+            if current_format_standard == 'BGRA':
+                # BGRA N texture should use the user's N format setting (BC5, BC1, or BGR)
+                # Don't hardcode to BGR - let user settings determine the best compressed format
+                target_format = settings['n_format']
+            elif current_format_standard == 'BC3/DXT5':
+                # BC3 N texture can become BC1 (half the size, same compression)
+                # BC5 would be recompression with no benefit, BC1 is the clear choice
+                target_format = 'BC1/DXT1'
+
+        # Small texture override (only applies to uncompressed sources, not already-compressed)
+        # Don't want to decompress small BC1/BC3/BC5 textures - wastes disk space
         if settings['use_small_texture_override']:
-            min_dim = min(new_width, new_height)
-            if is_nh:
-                threshold = settings['small_nh_threshold']
-                if threshold > 0 and min_dim <= threshold:
-                    target_format = "BGRA"
-            else:
-                threshold = settings['small_n_threshold']
-                if threshold > 0 and min_dim <= threshold:
-                    target_format = "BGR"
+            # Only override if source is uncompressed (BGRA/BGR) or if we're already converting
+            is_already_compressed = current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']
+
+            if not is_already_compressed or not should_preserve:
+                min_dim = min(new_width, new_height)
+                if is_nh:
+                    threshold = settings['small_nh_threshold']
+                    if threshold > 0 and min_dim <= threshold:
+                        target_format = "BGRA"
+                else:
+                    threshold = settings['small_n_threshold']
+                    if threshold > 0 and min_dim <= threshold:
+                        target_format = "BGR"
 
         texconv_format = FORMAT_MAP[target_format]
 
@@ -267,8 +387,8 @@ def _process_file_worker(args):
     )
 
     try:
-        orig_dims = _get_dimensions_static(dds_file)
-        orig_format = _get_format_static(dds_file)
+        # Get both dimensions and format in a single subprocess call
+        orig_dims, orig_format = _get_dds_info_static(dds_file)
         result.orig_dims = orig_dims
         result.orig_format = orig_format
 
@@ -309,8 +429,8 @@ def _analyze_file_worker(args):
     )
 
     try:
-        dimensions = _get_dimensions_static(dds_file)
-        format_name = _get_format_static(dds_file)
+        # Get both dimensions and format in a single subprocess call
+        dimensions, format_name = _get_dds_info_static(dds_file)
 
         if not dimensions:
             result.error = "Could not determine dimensions"
@@ -325,21 +445,167 @@ def _analyze_file_worker(args):
         result.new_width = new_width
         result.new_height = new_height
 
-        # Determine target format
+        # Check if we're resizing
+        will_resize = (new_width != width) or (new_height != height)
+
+        # Determine target format with smart format handling
+        # Decision Priority Order:
+        # 1. Format Options (_N and _NH)
+        # 2. Mislabeled NH→N textures (changes is_nh flag)
+        # 3. Preserve compressed formats when not downscaling (sets should_preserve flag)
+        # 4. Auto-optimize formats with wasted alpha (only if not preserved)
+        # 5. Small texture override (only for uncompressed sources - prevents decompressing small BC1/BC3/BC5)
+
         target_format = settings['nh_format'] if is_nh else settings['n_format']
 
+        # Map common format names to our format identifiers
+        format_to_standard = {
+            'BC5_UNORM': 'BC5/ATI2',
+            'BC3_UNORM': 'BC3/DXT5',
+            'BC1_UNORM': 'BC1/DXT1',
+            'B8G8R8A8_UNORM': 'BGRA',
+            'B8G8R8X8_UNORM': 'BGR'
+        }
+        current_format_standard = format_to_standard.get(format_name, format_name)
+
+        # Auto-fix: NH-labeled textures with no-alpha formats should be treated as N
+        if is_nh and settings['auto_fix_nh_to_n']:
+            if current_format_standard in ['BGR', 'BC5/ATI2', 'BC1/DXT1']:
+                # This is really an N texture, use N format
+                target_format = settings['n_format']
+                is_nh = False  # Update for later logic
+
+        # Preserve compressed format when not resizing (but not if it needs optimization)
+        should_preserve = False
+        if settings['preserve_compressed_format'] and not will_resize:
+            compressed_formats = ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']
+            if current_format_standard in compressed_formats:
+                # Check if this format is appropriate for the texture type
+                if is_nh:
+                    # NH textures: BC3 is good, BC5/BC1 have no alpha
+                    if current_format_standard == 'BC3/DXT5':
+                        should_preserve = True
+                else:
+                    # N textures: BC5 and BC1 are good, BC3 has wasted alpha
+                    if current_format_standard in ['BC5/ATI2', 'BC1/DXT1']:
+                        should_preserve = True
+
+                if should_preserve:
+                    target_format = current_format_standard
+
+        # Auto-optimize: N textures with alpha formats can be optimized (only if not preserved)
+        if not is_nh and settings['auto_optimize_n_alpha'] and not should_preserve:
+            if current_format_standard == 'BGRA':
+                # BGRA N texture should use the user's N format setting (BC5, BC1, or BGR)
+                # Don't hardcode to BGR - let user settings determine the best compressed format
+                target_format = settings['n_format']
+            elif current_format_standard == 'BC3/DXT5':
+                # BC3 N texture can become BC1 (half the size, same compression)
+                # BC5 would be recompression with no benefit, BC1 is the clear choice
+                target_format = 'BC1/DXT1'
+
+        # Small texture override (only applies to uncompressed sources, not already-compressed)
+        # Don't want to decompress small BC1/BC3/BC5 textures - wastes disk space
         if settings['use_small_texture_override']:
-            min_dim_output = min(new_width, new_height)
-            if is_nh:
-                threshold = settings['small_nh_threshold']
-                if threshold > 0 and min_dim_output <= threshold:
-                    target_format = "BGRA"
-            else:
-                threshold = settings['small_n_threshold']
-                if threshold > 0 and min_dim_output <= threshold:
-                    target_format = "BGR"
+            # Only override if source is uncompressed (BGRA/BGR) or if we're already converting
+            is_already_compressed = current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']
+
+            if not is_already_compressed or not should_preserve:
+                min_dim_output = min(new_width, new_height)
+                if is_nh:
+                    threshold = settings['small_nh_threshold']
+                    if threshold > 0 and min_dim_output <= threshold:
+                        target_format = "BGRA"
+                else:
+                    threshold = settings['small_n_threshold']
+                    if threshold > 0 and min_dim_output <= threshold:
+                        target_format = "BGR"
 
         result.target_format = target_format
+
+        # Detect warnings and informational messages
+        warnings = []
+
+        # Store the original is_nh value for warning detection
+        original_is_nh = dds_file.stem.lower().endswith('_nh')
+
+        # Info: Compressed passthrough (file will just be copied)
+        # Only if texture is compressed AND correctly formatted (or fixable via rename)
+        if settings.get('allow_compressed_passthrough', False):
+            if current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']:
+                can_passthrough = False
+                needs_rename = False
+
+                # Check for mislabeling (NH textures without alpha)
+                if original_is_nh and settings.get('auto_fix_nh_to_n', True):
+                    # NH texture in BC5/BC1 is mislabeled
+                    if current_format_standard in ['BC5/ATI2', 'BC1/DXT1']:
+                        can_passthrough = True  # Can copy as-is
+                        needs_rename = True  # But rename _NH → _N
+                    elif current_format_standard == 'BC3/DXT5':
+                        can_passthrough = True  # BC3 is correct for NH
+                        needs_rename = False
+                else:
+                    # N texture - check for wasted alpha
+                    if not original_is_nh and settings.get('auto_optimize_n_alpha', True):
+                        if current_format_standard == 'BC3/DXT5':
+                            can_passthrough = False  # BC3 N has wasted alpha - must optimize to BC1
+                        else:
+                            can_passthrough = True  # BC5 or BC1 are good for N
+                    else:
+                        can_passthrough = True  # Auto-optimize disabled, accept as-is
+
+                if can_passthrough:
+                    if needs_rename:
+                        warnings.append(f"Compressed passthrough with rename - copying _NH→_N (mislabeled, no reprocessing needed)")
+                    else:
+                        warnings.append(f"Compressed passthrough - file will be copied as-is (no Z-reconstruction or mipmap regen)")
+
+        # Info: Auto-fixed mislabeled NH texture
+        if original_is_nh and not is_nh and settings['auto_fix_nh_to_n']:
+            warnings.append(f"NH-labeled texture stored as {current_format_standard} (no alpha) - auto-fixed to N texture")
+
+        # Info: Auto-optimized N texture with wasted alpha
+        if not original_is_nh and settings['auto_optimize_n_alpha'] and not should_preserve:
+            if current_format_standard == 'BGRA' and target_format != 'BGRA':
+                warnings.append(f"N texture with unused alpha in BGRA - auto-optimized to {target_format}")
+            elif current_format_standard == 'BC3/DXT5' and target_format == 'BC1/DXT1':
+                warnings.append(f"N texture with unused alpha in BC3 - auto-optimized to BC1")
+
+        # Info: Preserved compressed format (only if it's a good format for the type)
+        if should_preserve and current_format_standard == target_format:
+            warnings.append(f"Compressed format {current_format_standard} preserved (not resizing)")
+
+        # Warning: N texture saved to format with unused alpha channel (after auto-fix logic)
+        if not is_nh and not settings['auto_optimize_n_alpha']:
+            if target_format in ["BGRA", "BC3/DXT5"]:
+                warnings.append(f"N texture will be saved as {target_format} - alpha channel will not be used (auto-optimize disabled)")
+
+        # Warning: NH texture saved to format without alpha channel (that wasn't auto-fixed)
+        if original_is_nh and is_nh:  # Still NH after auto-fix logic
+            if target_format in ["BGR", "BC5/ATI2", "BC1/DXT1"]:
+                warnings.append(f"NH texture will be saved as {target_format} - alpha channel not available")
+
+        # Warning: Converting from compressed to larger/uncompressed format without resize benefit
+        if not settings['preserve_compressed_format']:
+            compressed_source_formats = ["BC3_UNORM", "BC1_UNORM", "BC5_UNORM"]
+            if format_name in compressed_source_formats:
+                # Check if converting to larger format
+                size_increase_targets = []
+                if format_name == "BC1_UNORM":
+                    # BC1 is 4bpp, so BC3/BC5 (8bpp) and BGR/BGRA (24/32bpp) are larger
+                    if target_format in ["BC3/DXT5", "BC5/ATI2", "BGR", "BGRA"]:
+                        size_increase_targets.append(target_format)
+                elif format_name in ["BC3_UNORM", "BC5_UNORM"]:
+                    # BC3/BC5 are 8bpp, so BGR/BGRA (24/32bpp) are larger
+                    if target_format in ["BGR", "BGRA"]:
+                        size_increase_targets.append(target_format)
+
+                if size_increase_targets and not will_resize:
+                    for target in size_increase_targets:
+                        warnings.append(f"Converting {format_name} to {target} will increase file size without quality gain (preserve format disabled)")
+
+        result.warnings = warnings
 
         # Estimate output size
         num_pixels = new_width * new_height * 1.33

@@ -52,6 +52,10 @@ class NormalMapProcessorGUI:
         self.enable_parallel = tk.BooleanVar(value=True)
         self.max_workers = tk.IntVar(value=max(1, cpu_count() - 1))
         self.chunk_size_mb = tk.IntVar(value=75)
+        self.preserve_compressed_format = tk.BooleanVar(value=True)
+        self.auto_fix_nh_to_n = tk.BooleanVar(value=True)
+        self.auto_optimize_n_alpha = tk.BooleanVar(value=True)
+        self.allow_compressed_passthrough = tk.BooleanVar(value=False)
 
         # State
         self.processing = False
@@ -147,7 +151,7 @@ class NormalMapProcessorGUI:
             "   the default settings will work fine.\n\n"
             "   Still unsure? Use \"Dry Run\" to see what will happen before processing.\n"
             "   It has a file by file breakdown and statistics at the bottom.\n\n"
-            "3. Compression and downsampling are LOSSY (you lose information). However,\n"
+            "3. Compression and downscaling are LOSSY (you lose information). However,\n"
             "   75-95% space savings is nearly always worth it.\n\n"
             "4. Z-channel reconstruction: Many normal map generators output 2-channel\n"
             "   (RG only) maps, expecting BC5/ATI2 or R8G8 formats. OpenMW will ONLY\n"
@@ -178,6 +182,59 @@ class NormalMapProcessorGUI:
         self._create_link(links_frame, "chaiNNer FAQ", "https://openmodeldb.info/docs/faq")
         ttk.Label(links_frame, text="|").pack(side="left", padx=5)
         self._create_link(links_frame, "DXT Artifact Removal", "https://openmodeldb.info/models/1x-DEDXT")
+
+        # Smart Format Handling Decision Flow
+        frame_decision_flow = ttk.LabelFrame(scrollable_help, text="Smart Format Handling - Decision Flow", padding=10)
+        frame_decision_flow.pack(fill="x", padx=10, pady=5)
+
+        decision_flow_text = (
+            "The tool applies format decisions in this priority order:\n\n"
+            "Priority 0: Compressed Passthrough (if enabled - NOT RECOMMENDED)\n"
+            "  ⚠ Well-compressed textures → Simply copied, no processing\n"
+            "  ⚠ NH in BC3 → passthrough ✓ | N in BC5/BC1 → passthrough ✓\n"
+            "  ⚠ NH in BC5/BC1 → passthrough + rename to _N ✓ (mislabeled)\n"
+            "  ⚠ N in BC3 → reprocess (wasted alpha)\n"
+            "  ⚠ Skips Z-channel reconstruction and mipmap regeneration\n"
+            "  ⚠ Only use if CERTAIN compressed textures are already correct\n\n"
+            "Priority 1: Format Options (_N and _NH)\n"
+            "  • NH textures → User's NH format (default: BC3/DXT5)\n"
+            "  • N textures → User's N format (default: BC5/ATI2)\n\n"
+            "Priority 2: Mislabeled NH→N textures\n"
+            "  • texture_NH.dds in BC5/BC1/BGR → Treated as N texture, uses N format\n\n"
+            "Priority 3: Preserve compressed formats when not downscaling\n"
+            "  • NH textures: Only BC3 preserved (has alpha)\n"
+            "  • N textures: Only BC5 or BC1 preserved (no wasted alpha)\n"
+            "  • BC3 N textures are NOT preserved (wasted alpha)\n\n"
+            "Priority 4: Auto-optimize formats with wasted alpha\n"
+            "  • N textures in BGRA → User's N format\n"
+            "  • N textures in BC3 → BC1 (half file size)\n\n"
+            "Priority 5: Small texture override (only for uncompressed sources)\n"
+            "  • NH ≤256px → BGRA (only if source is BGRA/uncompressed)\n"
+            "  • N ≤128px → BGR (only if source is BGR/BGRA/uncompressed)\n"
+            "  • Already-compressed small textures kept compressed\n\n"
+            "Example: N texture in BC3, not downscaling, small override disabled\n"
+            "  → Step 1: BC5 (user N format)\n"
+            "  → Step 2: No change (not NH)\n"
+            "  → Step 3: NOT preserved (BC3 has wasted alpha for N)\n"
+            "  → Step 4: BC1 (optimize BC3→BC1) ✓ FINAL\n"
+            "  → Step 5: No change (not small)\n\n"
+            "Example: NH texture in BC5, not downscaling\n"
+            "  → Step 1: BC3 (user NH format)\n"
+            "  → Step 2: BC5 → treated as N texture, format becomes BC5 ✓ FINAL\n"
+            "  → Step 3: Preserved (BC5 is good for N)\n"
+            "  → Step 4: No change (preserved)\n"
+            "  → Step 5: No change (already compressed, kept compressed)\n\n"
+            "Example: N texture in BC1, 64x64, not downscaling\n"
+            "  → Step 1: BC5 (user N format)\n"
+            "  → Step 2: No change (not NH)\n"
+            "  → Step 3: Preserved (BC1 is good for N) ✓ FINAL\n"
+            "  → Step 4: No change (preserved)\n"
+            "  → Step 5: No change (already compressed, kept compressed even though small)"
+        )
+
+        decision_flow_label = ttk.Label(frame_decision_flow, text=decision_flow_text, justify="left",
+                                        font=("Courier New", 8), wraplength=self.WRAPLENGTH)
+        decision_flow_label.pack(anchor="w")
 
         # Format Reference
         frame_format_ref = ttk.LabelFrame(scrollable_help, text="Format Reference", padding=10)
@@ -307,11 +364,11 @@ class NormalMapProcessorGUI:
         ttk.Label(frame_formats, text="(Recommended: BC3/DXT5 (mostly) Read the Documentation Section.)",
                  font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
 
-        # Resize Options
-        frame_resize = ttk.LabelFrame(scrollable_settings, text="Resize Options", padding=10)
+        # Downscale Options
+        frame_resize = ttk.LabelFrame(scrollable_settings, text="Downscale Options", padding=10)
         frame_resize.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(frame_resize, text="Resize Method:").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Label(frame_resize, text="Downscale Method:").grid(row=0, column=0, sticky="w", pady=5)
         resize_combo = ttk.Combobox(frame_resize, textvariable=self.resize_method,
                                     values=[
                                         "CUBIC (Recommended - smooth surfaces + detail)",
@@ -321,11 +378,11 @@ class NormalMapProcessorGUI:
                                     ], state="readonly", width=45)
         resize_combo.grid(row=0, column=1, sticky="w", padx=10, pady=5)
 
-        ttk.Label(frame_resize, text="Scale Factor:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(frame_resize, text="Downscale Factor:").grid(row=1, column=0, sticky="w", pady=5)
         scale_combo = ttk.Combobox(frame_resize, textvariable=self.scale_factor,
                                    values=[0.125, 0.25, 0.5, 1.0], state="readonly", width=20)
         scale_combo.grid(row=1, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(frame_resize, text="(1.0 = no resizing unless max set)",
+        ttk.Label(frame_resize, text="(1.0 = no downscaling unless max resolution set)",
                  font=("", 8, "italic")).grid(row=1, column=2, sticky="w")
 
         ttk.Label(frame_resize, text="Max Resolution:").grid(row=2, column=0, sticky="w", pady=5)
@@ -333,7 +390,7 @@ class NormalMapProcessorGUI:
                                      values=[0, 128, 256, 512, 1024, 2048, 4096, 8192],
                                      state="readonly", width=20)
         max_res_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(frame_resize, text="(0 = no limit; Downsamples textures above threshold EVEN at 1.0 scale)",
+        ttk.Label(frame_resize, text="(0 = no limit; Downscales textures above threshold EVEN at 1.0 scale)",
                  font=("", 8, "italic")).grid(row=2, column=2, sticky="w", columnspan=2)
         ttk.Label(frame_resize, text="Recommended: 2048 unless you know what you're doing",
                  font=("", 8, "italic")).grid(row=3, column=2, sticky="w", padx=(0, 0), columnspan=2)
@@ -343,9 +400,9 @@ class NormalMapProcessorGUI:
                                      values=[0, 128, 256, 512, 1024, 2048, 4096, 8192],
                                      state="readonly", width=20)
         min_res_combo.grid(row=4, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(frame_resize, text="(0 = no limit; Only applies when scale < 1.0, prevents downsampling below this)",
+        ttk.Label(frame_resize, text="(0 = no limit; Only applies when scale < 1.0, prevents downscaling below this)",
                  font=("", 8, "italic")).grid(row=4, column=2, sticky="w", columnspan=2)
-        ttk.Label(frame_resize, text="Recommended: 256 for downsampling",
+        ttk.Label(frame_resize, text="Recommended: 256 for downscaling",
                  font=("", 8, "italic")).grid(row=5, column=2, sticky="w", padx=(0, 0), columnspan=2)
 
         # Normal Map Options
@@ -384,7 +441,7 @@ class NormalMapProcessorGUI:
                        variable=self.use_small_texture_override).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
 
         ttk.Label(frame_small_tex,
-                 text="Small textures benefit from uncompressed formats. This overrides your format settings for tiny textures.",
+                 text="Small textures benefit from uncompressed formats. This overrides your format settings for tiny UNCOMPRESSED textures. Already-compressed small textures (BC1/BC3/BC5) are kept compressed to avoid wasting disk space.",
                  font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
 
         ttk.Label(frame_small_tex, text="_NH threshold (BGRA):").grid(row=2, column=0, sticky="w", pady=5, padx=(20, 0))
@@ -404,6 +461,50 @@ class NormalMapProcessorGUI:
         ttk.Label(frame_small_tex,
                  text="⚠ Note: Thresholds are checked AFTER resizing. Set to 0 to disable override for that type.",
                  font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
+
+        # Smart Format Handling
+        frame_smart_format = ttk.LabelFrame(scrollable_settings, text="Smart Format Handling", padding=10)
+        frame_smart_format.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_smart_format, text="Preserve compressed format when not downscaling (recommended)",
+                       variable=self.preserve_compressed_format).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_smart_format,
+                 text="When enabled, BC1/BC3/BC5 textures will keep their format if not being downscaled. Prevents unnecessary quality loss or file size increase.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Checkbutton(frame_smart_format, text="Auto-fix NH→N mislabeled textures (recommended)",
+                       variable=self.auto_fix_nh_to_n).grid(row=2, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_smart_format,
+                 text="Textures labeled _NH but stored in BGR/BC5/BC1 (no alpha) will be treated as _N textures and use N format settings.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Checkbutton(frame_smart_format, text="Auto-optimize N textures with unused alpha (recommended)",
+                       variable=self.auto_optimize_n_alpha).grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_smart_format,
+                 text="N textures stored in BGRA→your N format setting (BC5/BC1/BGR) or BC3→BC1 to remove wasted alpha channel. Reduces file size without quality loss.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=5, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Checkbutton(frame_smart_format, text="Allow well-compressed textures to passthrough (NOT recommended)",
+                       variable=self.allow_compressed_passthrough).grid(row=6, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_smart_format,
+                 text="⚠ When enabled, correctly-compressed textures are simply copied without reprocessing. NH in BC3 and N in BC5/BC1 pass through. Mislabeled NH in BC5/BC1 are copied and renamed to _N (no reprocessing). Only N in BC3 (wasted alpha) are reprocessed. Skips Z-channel reconstruction and mipmap regeneration. Only use if you're CERTAIN your compressed textures are already correct.",
+                 font=("", 8), wraplength=600, justify="left", foreground="red").grid(row=7, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_smart_format, text="", font=("", 2)).grid(row=8, column=0, columnspan=3, sticky="w")
+
+        ttk.Label(frame_smart_format,
+                 text="Decision Priority Order:\n"
+                      "0. Compressed passthrough (if enabled - copies well-compressed only)\n"
+                      "   • NH in BC3 → passthrough ✓\n"
+                      "   • N in BC5/BC1 → passthrough ✓\n"
+                      "   • NH in BC5/BC1 → passthrough + rename to _N ✓\n"
+                      "   • N in BC3 → reprocess (wasted alpha)\n"
+                      "1. Format Options (_N and _NH)\n"
+                      "2. Mislabeled NH→N textures\n"
+                      "3. Preserve compressed formats when not downscaling\n"
+                      "4. Auto-optimize formats with wasted alpha\n"
+                      "5. Small texture override (only for uncompressed sources)",
+                 font=("", 8), wraplength=600, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
         # Parallel Processing Settings
         frame_parallel = ttk.LabelFrame(scrollable_settings, text="Parallel Processing", padding=10)
@@ -510,29 +611,37 @@ class NormalMapProcessorGUI:
         frame_version.pack(fill="x", padx=10, pady=5)
 
         version_text = (
-            "Version 0.4\n"
+            "Version 0.5\n"
             "Features:\n"
             "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
             "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
-            "  • Resolution scaling and constraints\n"
+            "  • Texture downscaling with quality filters and resolution constraints\n"
             "  • Z-channel reconstruction for proper normal mapping\n"
             "  • Y flip normal map conversion\n"
             "  • Smart small texture handling\n"
-            "  • Dry run analysis with size projections\n"
+            "  • Smart format preservation (keeps compressed formats when not downscaling)\n"
+            "  • Auto-fix mislabeled NH→N textures (BGR/BC5/BC1 formats)\n"
+            "  • Auto-optimize N textures with unused alpha (BGRA→user N format, BC3→BC1)\n"
+            "  • Comprehensive warning system for format issues\n"
+            "  • Dry run analysis with size projections and warnings\n"
             "  • Detailed processing logs and statistics\n"
             "  • Export analysis reports\n"
             "  • Parallel processing (multi-core support for faster batch operations)\n\n"
+            "Version 0.5 Updates:\n"
+            "  • NEW: Smart format handling preserves compressed formats when not downscaling\n"
+            "  • NEW: Auto-detection and fixing of mislabeled NH textures\n"
+            "  • NEW: Auto-optimization of N textures with wasted alpha channels\n"
+            "  • NEW: Comprehensive warning system shows potential issues before processing\n"
+            "  • NEW: ~50% faster analysis (optimized subprocess calls)\n\n"
             "Known Issues:\n"
-            "  • The tool allows converting compressed formats to uncompressed formats if\n"
-            "    selected. Ideally, compressed inputs without resizing would be copied as-is,\n"
-            "    but since Z-channel validity cannot be verified without some dependencies\n"
-            "    (numpy/PIL) + overhead, the tool reprocesses all files. This may cause unnecessary\n"
-            "    decompression where the output will still look compressed but have a large file size (Very Bad)\n"
-            "    or introduce double compression artifacts (Varies from Fine to Very Bad).\n"
-            "    The user HAS been warned about this on the document page. Further the dry run does tell them what conversions are occurring.\n"
-            "  • Future versions will add (optional) format validation to preserve compressed inputs\n"
-            "    when no resizing occurs IF Z-channel reconstruction is not needed or selected.\n"
-            "    Should also keep in mind the user may have not generated mipmaps or have created invalid ones.\n"
+            "  • The 'Preserve compressed format' option (enabled by default) prevents unnecessary\n"
+            "    format conversions when not downscaling. However, all files are still reprocessed\n"
+            "    for Z-channel reconstruction and mipmap regeneration.\n"
+            "  • The 'Allow well-compressed textures to passthrough' option (disabled by default)\n"
+            "    can skip reprocessing entirely, but should only be used if you're certain your\n"
+            "    compressed textures already have correct Z-channels and mipmaps.\n"
+            "  • The dry run analysis provides detailed warnings about any problematic conversions\n"
+            "    before you commit to processing files.\n"
         )
 
         version_label = ttk.Label(frame_version, text=version_text, justify="left",
@@ -603,7 +712,11 @@ class NormalMapProcessorGUI:
             resize_method=self.resize_method.get(),
             enable_parallel=self.enable_parallel.get(),
             max_workers=self.max_workers.get(),
-            chunk_size_mb=self.chunk_size_mb.get()
+            chunk_size_mb=self.chunk_size_mb.get(),
+            preserve_compressed_format=self.preserve_compressed_format.get(),
+            auto_fix_nh_to_n=self.auto_fix_nh_to_n.get(),
+            auto_optimize_n_alpha=self.auto_optimize_n_alpha.get(),
+            allow_compressed_passthrough=self.allow_compressed_passthrough.get()
         )
 
     def start_analysis(self):
@@ -681,6 +794,8 @@ class NormalMapProcessorGUI:
             format_stats = {}
             oversized_textures = []
             undersized_textures = []
+            all_warnings = []
+            all_info_messages = []
 
             action_groups = {
                 'resize_and_reformat': [],
@@ -737,6 +852,17 @@ class NormalMapProcessorGUI:
                 self.log(f"  Current: {result.format}, {result.width}x{result.height}, {format_size(result.file_size)}")
                 self.log(f"  Projected: {result.target_format}, {result.new_width}x{result.new_height}, {format_size(result.projected_size)}")
 
+                # Collect and display warnings/info for this file
+                if result.warnings:
+                    for warning in result.warnings:
+                        # Categorize as info or warning
+                        if any(keyword in warning for keyword in ['auto-fixed', 'auto-optimized', 'preserved']):
+                            self.log(f"  ℹ {warning}")
+                            all_info_messages.append((result.relative_path, warning))
+                        else:
+                            self.log(f"  ⚠ {warning}")
+                            all_warnings.append((result.relative_path, warning))
+
             # Display stats
             self.log("\n=== Current State ===")
             self.log(f"Total size: {format_size(total_current_size)}")
@@ -777,9 +903,48 @@ class NormalMapProcessorGUI:
             self.log(f"Projected total size: {format_size(total_projected_size)}")
             self.log(f"Estimated savings: {format_size(savings)} ({savings_percent:.1f}%)")
 
+            # Info messages (auto-fixes, optimizations, preservations)
+            if all_info_messages:
+                self.log("\n=== ℹ AUTOMATIC ADJUSTMENTS ===")
+                self.log("The following optimizations will be applied automatically.")
+                self.log("You can disable these in Settings > Smart Format Handling (not recommended).\n")
+
+                info_groups = {}
+                for path, info in all_info_messages:
+                    if info not in info_groups:
+                        info_groups[info] = []
+                    info_groups[info].append(path)
+
+                for info, paths in info_groups.items():
+                    self.log(f"\nℹ {info}:")
+                    self.log(f"  {len(paths)} file(s)")
+                    if len(paths) <= 3:
+                        for path in paths:
+                            self.log(f"    • {path}")
+                    else:
+                        for path in paths[:3]:
+                            self.log(f"    • {path}")
+                        self.log(f"    ... and {len(paths) - 3} more files")
+
             # Warnings
-            if oversized_textures or undersized_textures:
+            if oversized_textures or undersized_textures or all_warnings:
                 self.log("\n=== ⚠ WARNINGS ===")
+
+            # Display conversion/format warnings
+            if all_warnings:
+                self.log(f"\n⚠ Found {len(all_warnings)} format/conversion warning(s):")
+                warning_groups = {}
+                for path, warning in all_warnings:
+                    if warning not in warning_groups:
+                        warning_groups[warning] = []
+                    warning_groups[warning].append(path)
+
+                for warning, paths in warning_groups.items():
+                    self.log(f"\n  {warning}:")
+                    for path in paths[:3]:
+                        self.log(f"    • {path}")
+                    if len(paths) > 3:
+                        self.log(f"    ... and {len(paths) - 3} more files")
 
             if oversized_textures:
                 self.log(f"\n⚠ Found {len(oversized_textures)} texture(s) larger than 2048 on any side:")
@@ -805,6 +970,9 @@ class NormalMapProcessorGUI:
 
             elapsed_time = time.time() - start_time
             self.log("\n=== Dry Run Complete ===")
+            self.log(f"Found {nh_count} _nh.dds file(s)")
+            self.log(f"Found {n_count} _n.dds file(s)")
+            self.log(f"Total: {len(results)} normal map file(s)")
             self.log(f"Time taken: {format_time(elapsed_time)}")
             if len(results) > 0:
                 avg_time = elapsed_time / len(results)
@@ -898,7 +1066,9 @@ class NormalMapProcessorGUI:
             self.stats_label.config(text=stats_msg)
 
             self.log("\n=== Processing Complete ===")
-            self.log(f"Total files: {total}")
+            self.log(f"Found {len(nh_files)} _nh.dds file(s)")
+            self.log(f"Found {len(n_files)} _n.dds file(s)")
+            self.log(f"Total: {total_files} normal map file(s)")
             self.log(f"Successful: {self.processed_count}")
             self.log(f"Failed: {self.failed_count}")
             self.log(f"Space savings: {format_size(savings)} ({savings_percent:.1f}%)")
