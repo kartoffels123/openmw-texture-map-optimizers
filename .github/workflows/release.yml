@@ -2,11 +2,13 @@ name: Release
 
 on:
   release:
-    types: [created]
+    types: [published]
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -23,11 +25,8 @@ jobs:
             tools/
 
       - name: Upload release asset
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v1
+        with:
+          files: openmw-normal-map-optimizer.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ github.event.release.upload_url }}
-          asset_path: ./openmw-normal-map-optimizer.zip
-          asset_name: openmw-normal-map-optimizer.zip
-          asset_content_type: application/zip

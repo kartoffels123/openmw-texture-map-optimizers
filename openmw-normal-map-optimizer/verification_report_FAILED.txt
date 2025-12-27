@@ -1,0 +1,188 @@
+================================================================================
+PIPELINE VERIFICATION REPORT
+================================================================================
+
+=== Settings ===
+  n_format: BC5/ATI2
+  nh_format: BC3/DXT5
+  scale_factor: 1.0
+  max_resolution: 2048
+  min_resolution: 256
+  preserve_compressed_format: True
+  auto_fix_nh_to_n: True
+  auto_optimize_n_alpha: True
+  allow_compressed_passthrough: True
+  use_small_texture_override: True
+  small_n_threshold: 128
+  small_nh_threshold: 256
+  enable_atlas_downscaling: False
+
+=== Results ===
+Total files checked: 13336
+Verified (match):    13250
+Mismatches:          86
+
+❌ FAILURES DETECTED
+
+
+MISSING: 52 files
+
+  File: The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow36_n.dds
+    Output file not created
+
+  File: The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow07_n.dds
+    Output file not created
+
+  File: The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow35_n.dds
+    Output file not created
+
+  File: The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow18_n.dds
+    Output file not created
+
+  File: The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow27_n.dds
+    Output file not created
+
+  ... and 47 more MISSING errors
+
+All MISSING files:
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow36_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow07_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow35_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow18_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow27_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow13_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glowarea01_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow02_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow31_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow15_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow08_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow46_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glowarea50_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow41_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow06_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow20_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow24_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow47_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow01_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow10_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow23_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow28_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow19_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow04_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow42_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow49_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow43_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow32_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow33_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow26_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow37_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow14_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow29_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow03_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow44_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow45_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow17_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow12_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow34_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow38_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow05_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow25_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow50_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow39_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow40_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow21_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow22_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow48_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow16_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow09_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow11_n.dds
+  The Doors of Oblivion Full Upscale - Normal and Specular Maps\textures\glow30_n.dds
+
+FORMAT_MISMATCH: 29 files
+
+  File: Lava - Mold - Mud Caverns Revamp - PY\textures\PYwall_albedo_n.dds
+    Predicted: BC5/ATI2 @ 2048x2048
+    Actual:    BC1/DXT1 @ 4096x4096
+
+  File: Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_redoran_tavern_01_n.dds
+    Predicted: BC5/ATI2 @ 2048x2048
+    Actual:    BC1/DXT1 @ 4096x4096
+
+  File: Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_natural_cavern_wall20_n.dds
+    Predicted: BC5/ATI2 @ 2048x2048
+    Actual:    BC1/DXT1 @ 4096x4096
+
+  File: Ice Blade of the Monarch Replacer - OpenMW\textures\tx_iceblade_n.dds
+    Predicted: BC5/ATI2 @ 2048x256
+    Actual:    BC1/DXT1 @ 8192x1024
+
+  File: kart's special race\textures\kart\bbr\2\br_m_uni_n.dds
+    Predicted: BC5/ATI2 @ 2048x2048
+    Actual:    BC1/DXT1 @ 4096x4096
+
+  ... and 24 more FORMAT_MISMATCH errors
+
+All FORMAT_MISMATCH files:
+  Lava - Mold - Mud Caverns Revamp - PY\textures\PYwall_albedo_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_redoran_tavern_01_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_natural_cavern_wall20_n.dds
+  Ice Blade of the Monarch Replacer - OpenMW\textures\tx_iceblade_n.dds
+  kart's special race\textures\kart\bbr\2\br_m_uni_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_rock_wg_01_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_natural_cavern_wall00_n.dds
+  kart's special race\textures\kart\bbr\br_m_uni_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_natural_cavern_wall10_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_redoran_marble_red_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_natural_cavern_wall11_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_dwe_metal03_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_wall_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_natural_cavern_wall01_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_natural_cavern_wall21_n.dds
+  The Stone Halls of Solstheim - Reforged Normal Mapped\Textures\shs\shs_bloodskal_blade_n.dds
+  Greymarch Dawn - Whispers of Jyggalag\Textures\vv23\x\vv23_sky_01_d_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_shrine_amalexia_n.dds
+  Clannfear Replacer - OpenMW\textures\tx_clannfear_n.dds
+  Dwemer Architecture Reimagined\textures\tx_dwrv_obs_sky00_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\tx_redoran_blue_01_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\amalexia_statue_n.dds
+  Morrowind Enhanced Textures Normal Maps for OpenMW\Textures\mehrunesdagon_n.dds
+  Velothi Architecture Reimagined\textures\tx_v_base_10_n.dds
+  Epic Plants Normal Mapped\Textures\Tx_vine_01_n.dds
+  Redoran - Arkitektora Vol.2 - HQ Normal Maps\Textures\tx_redoran_wall_02_n.dds
+  Greymarch Dawn - Whispers of Jyggalag\Textures\vv23\x\vv23_sky_01_g_n.dds
+  Velothi Architecture Reimagined\textures\tx_v_base_02_n.dds
+  Greymarch Dawn - Whispers of Jyggalag\Textures\vv23\x\vv23_sky_01_n.dds
+
+SIZE_MISMATCH: 5 files
+
+  File: HD Clutter Normal Mapped\Textures\ATL\tx_item_pot_redware_atlas_n.dds
+    Format:    BC1/DXT1
+    Predicted: 1024x4096
+    Actual:    512x2048
+
+  File: White Suran Normal Mapped for OpenMW\textures\bw\suran\tx_whitesuran_atlas_n.dds
+    Format:    BC1/DXT1
+    Predicted: 1024x4096
+    Actual:    512x2048
+
+  File: PBR maps for Wareya's PBR core shaders for OpenMW 0.48\textures\amalexia_statue_nh.dds
+    Format:    BC3/DXT5
+    Predicted: 2048x1024
+    Actual:    4096x2048
+
+  File: PBR maps for Wareya's PBR core shaders for OpenMW 0.48\textures\mehrunesdagon_nh.dds
+    Format:    BC3/DXT5
+    Predicted: 2048x1024
+    Actual:    4096x2048
+
+  File: PBR maps for Wareya's PBR core shaders for OpenMW 0.48\textures\tx_shrine_amalexia_nh.dds
+    Format:    BC3/DXT5
+    Predicted: 2048x1024
+    Actual:    4096x2048
+
+All SIZE_MISMATCH files:
+  HD Clutter Normal Mapped\Textures\ATL\tx_item_pot_redware_atlas_n.dds
+  White Suran Normal Mapped for OpenMW\textures\bw\suran\tx_whitesuran_atlas_n.dds
+  PBR maps for Wareya's PBR core shaders for OpenMW 0.48\textures\amalexia_statue_nh.dds
+  PBR maps for Wareya's PBR core shaders for OpenMW 0.48\textures\mehrunesdagon_nh.dds
+  PBR maps for Wareya's PBR core shaders for OpenMW 0.48\textures\tx_shrine_amalexia_nh.dds
