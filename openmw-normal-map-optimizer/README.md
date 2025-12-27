@@ -19,7 +19,13 @@ If any of the technical details below don't make sense to you and you just want 
 
 ## Features
 
-### Version 0.8 (Current)
+### Version 0.9 (Current)
+- **Bugfix for resizing** - Min/max resolution logic now works correctly
+- **Default enforce of power-of-2** - Now enabled by default (expected standard)
+- **More clear UI on resizing** - Added "Ceiling/Floor" labels and "How Downscaling Works" guide
+- **More clear analysis on resizing** - Better messaging about min/max protection
+
+### Version 0.8
 - **Analysis caching** - Headers read once during dry run, reused during processing for instant start
 - **Mandatory dry run** - Process Files button disabled until dry run completes (don't worry, takes only seconds!)
 - **Auto-cache invalidation** - Settings changes automatically invalidate cache and prompt re-analysis
@@ -151,7 +157,13 @@ openmw-normal-map-optimizer/
 
 ## Version History
 
-### Version 0.8 (Current)
+### Version 0.9 (Current)
+- **Bugfix for resizing** - Min/max resolution logic now works correctly
+- **Default enforce of power-of-2** - Now enabled by default (expected standard)
+- **More clear UI on resizing** - Added "Ceiling/Floor" labels and "How Downscaling Works" guide
+- **More clear analysis on resizing** - Better messaging about min/max protection
+
+### Version 0.8
 - Analysis caching - headers read once, reused during processing
 - Mandatory dry run - Process Files disabled until dry run completes (takes only seconds!)
 - Auto-cache invalidation when settings change
