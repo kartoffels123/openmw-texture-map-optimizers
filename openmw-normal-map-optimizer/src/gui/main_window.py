@@ -72,6 +72,9 @@ class NormalMapProcessorGUI:
         self.enable_atlas_downscaling = tk.BooleanVar(value=False)
         self.atlas_max_resolution = tk.IntVar(value=4096)
 
+        # Power-of-2 enforcement
+        self.enforce_power_of_2 = tk.BooleanVar(value=True)
+
         self.create_widgets()
 
         # Attach change callbacks AFTER widgets are created to avoid triggering during init
@@ -80,7 +83,7 @@ class NormalMapProcessorGUI:
                     self.uniform_weighting, self.use_dithering, self.use_small_texture_override,
                     self.small_nh_threshold, self.small_n_threshold, self.preserve_compressed_format,
                     self.auto_fix_nh_to_n, self.auto_optimize_n_alpha, self.allow_compressed_passthrough,
-                    self.enable_atlas_downscaling, self.atlas_max_resolution]:
+                    self.enable_atlas_downscaling, self.atlas_max_resolution, self.enforce_power_of_2]:
             var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
@@ -468,7 +471,21 @@ class NormalMapProcessorGUI:
         frame_resize = ttk.LabelFrame(scrollable, text="Downscale Options", padding=10)
         frame_resize.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(frame_resize, text="Downscale Method:").grid(row=0, column=0, sticky="w", pady=5)
+        # Explanation section
+        ttk.Label(frame_resize,
+                 text="How Downscaling Works:",
+                 font=("", 9, "bold")).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 5))
+        ttk.Label(frame_resize,
+                 text="• Downscale Factor: Applies to ALL textures (e.g., 0.5 = half size, 1.0 = no resize)\n"
+                      "• Max Resolution (Ceiling): Downscales textures LARGER than this - applies EVEN at 1.0 scale factor\n"
+                      "• Min Resolution (Floor): Protects textures SMALLER than this - only applies when scale < 1.0 (e.g., 0.5, 0.25)\n\n"
+                      "Example 1 (with downscaling): Factor 0.5, max 2048, min 256\n"
+                      "  → 4096x4096 becomes 2048x2048 (capped by max), 512x512 becomes 256x256, 256x256 stays as-is (protected by min)\n"
+                      "Example 2 (no downscaling): Factor 1.0, max 2048, min 256\n"
+                      "  → 4096x4096 becomes 2048x2048 (capped by max), 512x512 stays as-is, min does nothing at 1.0",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 10))
+
+        ttk.Label(frame_resize, text="Downscale Method:").grid(row=2, column=0, sticky="w", pady=5)
         resize_combo = ttk.Combobox(frame_resize, textvariable=self.resize_method,
                                     values=[
                                         "CUBIC (Recommended - smooth surfaces + detail)",
@@ -476,34 +493,30 @@ class NormalMapProcessorGUI:
                                         "BOX (Blurry, good for gradients)",
                                         "LINEAR (Fast, general purpose)"
                                     ], state="readonly", width=45)
-        resize_combo.grid(row=0, column=1, sticky="w", padx=10, pady=5)
+        resize_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
 
-        ttk.Label(frame_resize, text="Downscale Factor:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(frame_resize, text="Downscale Factor:").grid(row=3, column=0, sticky="w", pady=5)
         scale_combo = ttk.Combobox(frame_resize, textvariable=self.scale_factor,
                                    values=[0.125, 0.25, 0.5, 1.0], state="readonly", width=20)
-        scale_combo.grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        scale_combo.grid(row=3, column=1, sticky="w", padx=10, pady=5)
         ttk.Label(frame_resize, text="(1.0 = no downscaling unless max resolution set)",
-                 font=("", 8, "italic")).grid(row=1, column=2, sticky="w")
+                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w")
 
-        ttk.Label(frame_resize, text="Max Resolution:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(frame_resize, text="Max Resolution (Ceiling):").grid(row=4, column=0, sticky="w", pady=5)
         max_res_combo = ttk.Combobox(frame_resize, textvariable=self.max_resolution,
                                      values=[0, 128, 256, 512, 1024, 2048, 4096, 8192],
                                      state="readonly", width=20)
-        max_res_combo.grid(row=2, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(frame_resize, text="(0 = no limit; Downscales textures above threshold EVEN at 1.0 scale)",
-                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w", columnspan=2)
-        ttk.Label(frame_resize, text="Recommended: 2048 unless you know what you're doing",
-                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w", padx=(0, 0), columnspan=2)
+        max_res_combo.grid(row=4, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_resize, text="(0 = disabled)",
+                 font=("", 8, "italic")).grid(row=4, column=2, sticky="w", columnspan=2)
 
-        ttk.Label(frame_resize, text="Min Resolution:").grid(row=4, column=0, sticky="w", pady=5)
+        ttk.Label(frame_resize, text="Min Resolution (Floor):").grid(row=5, column=0, sticky="w", pady=5)
         min_res_combo = ttk.Combobox(frame_resize, textvariable=self.min_resolution,
                                      values=[0, 128, 256, 512, 1024, 2048, 4096, 8192],
                                      state="readonly", width=20)
-        min_res_combo.grid(row=4, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(frame_resize, text="(0 = no limit; Only applies when scale < 1.0, prevents downscaling below this)",
-                 font=("", 8, "italic")).grid(row=4, column=2, sticky="w", columnspan=2)
-        ttk.Label(frame_resize, text="Recommended: 256 for downscaling",
-                 font=("", 8, "italic")).grid(row=5, column=2, sticky="w", padx=(0, 0), columnspan=2)
+        min_res_combo.grid(row=5, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_resize, text="(0 = disabled)",
+                 font=("", 8, "italic")).grid(row=5, column=2, sticky="w", columnspan=2)
 
     def _create_advanced_settings(self, parent):
         """Create advanced settings sub-tab"""
@@ -619,6 +632,19 @@ class NormalMapProcessorGUI:
                       "This is pretty unlikely though. It's worth making 15 minutes of processing take only 15 seconds.",
                  font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
+        # Power-of-2 Enforcement
+        frame_pow2 = ttk.LabelFrame(scrollable, text="Power-of-2 Enforcement", padding=10)
+        frame_pow2.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_pow2, text="Enforce power-of-2 dimensions (recommended)",
+                       variable=self.enforce_power_of_2).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_pow2,
+                 text="Forces textures to power-of-2 dimensions (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, etc.).\n"
+                      "This is the expected standard and prevents unwanted behavior with texture rendering.\n"
+                      "⚠ Disabling this is NOT RECOMMENDED - while OpenMW supports NPOT (non-power-of-two) textures,\n"
+                      "POT dimensions are the expected standard. Only disable if you have a specific reason.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
     def _create_smart_format_settings(self, parent):
         """Create smart format handling sub-tab"""
         main_container = ttk.Frame(parent)
@@ -704,7 +730,10 @@ class NormalMapProcessorGUI:
                  font=("", 8), wraplength=600, justify="left", foreground="red").grid(row=2, column=0, columnspan=3, sticky="w", pady=2)
 
         ttk.Label(frame_atlas, text="Max resolution for atlases:", font=("", 9)).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=5)
-        ttk.Entry(frame_atlas, textvariable=self.atlas_max_resolution, width=10).grid(row=3, column=1, sticky="w", pady=5)
+        atlas_max_combo = ttk.Combobox(frame_atlas, textvariable=self.atlas_max_resolution,
+                                       values=[1024, 2048, 4096, 8192, 16384],
+                                       state="readonly", width=15)
+        atlas_max_combo.grid(row=3, column=1, sticky="w", pady=5)
         ttk.Label(frame_atlas,
                  text="Only applies if 'Enable downscaling for texture atlases' is checked. Default: 4096",
                  font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
@@ -783,7 +812,7 @@ class NormalMapProcessorGUI:
         frame_version.pack(fill="x", padx=10, pady=5)
 
         version_text = (
-            "Version 0.8\n"
+            "Version 0.9\n"
             "Features:\n"
             "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
             "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
@@ -799,7 +828,13 @@ class NormalMapProcessorGUI:
             "  • Analysis caching for instant processing after dry run\n"
             "  • Detailed processing logs and statistics\n"
             "  • Export analysis reports\n"
-            "  • Parallel processing (multi-core support for faster batch operations)\n\n"
+            "  • Parallel processing (multi-core support for faster batch operations)\n"
+            "  • Power-of-2 enforcement (enabled by default)\n\n"
+            "Version 0.9 Updates:\n"
+            "  • Bugfix for resizing - Min/max resolution logic now works correctly\n"
+            "  • Default enforce of power-of-2 - Now enabled by default (expected standard)\n"
+            "  • More clear UI on resizing - Added 'Ceiling/Floor' labels and 'How Downscaling Works' guide\n"
+            "  • More clear analysis on resizing - Better messaging about min/max protection\n\n"
             "Version 0.8 Updates:\n"
             "  • Analysis caching - headers read once, reused during processing\n"
             "  • Enforced workflow - Process Files disabled until dry run completes\n"
@@ -941,7 +976,8 @@ class NormalMapProcessorGUI:
             auto_optimize_n_alpha=self.auto_optimize_n_alpha.get(),
             allow_compressed_passthrough=self.allow_compressed_passthrough.get(),
             enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
-            atlas_max_resolution=self.atlas_max_resolution.get()
+            atlas_max_resolution=self.atlas_max_resolution.get(),
+            enforce_power_of_2=self.enforce_power_of_2.get()
         )
 
     def start_analysis(self):
@@ -1325,15 +1361,23 @@ class NormalMapProcessorGUI:
                     if unfixed > 0:
                         self.log(f"⚠  {unfixed} will remain smaller than 256px")
                 else:
-                    # Show as warning only if user is downscaling
+                    # Show as info only if user is downscaling
                     settings = self.get_settings()
                     if settings.scale_factor < 1.0:
-                        self.log(f"\n⚠ Resolution: {len(undersized_textures)} texture(s) smaller than 256px")
-                        for path, w, h in undersized_textures[:5]:
-                            self.log(f"     • {path} ({w}x{h})")
-                        if len(undersized_textures) > 5:
-                            self.log(f"     ... and {len(undersized_textures) - 5} more")
-                        self.log("   → Set 'Min Resolution: 256' to prevent over-compression when downscaling")
+                        if settings.min_resolution > 0:
+                            self.log(f"\nℹ Protection: {len(undersized_textures)} texture(s) smaller than {settings.min_resolution}px will not be downscaled")
+                            for path, w, h in undersized_textures[:5]:
+                                self.log(f"     • {path} ({w}x{h})")
+                            if len(undersized_textures) > 5:
+                                self.log(f"     ... and {len(undersized_textures) - 5} more")
+                            self.log(f"   → Protected by 'Min Resolution: {settings.min_resolution}' setting (prevents over-compression)")
+                        else:
+                            self.log(f"\n⚠ Resolution: {len(undersized_textures)} texture(s) smaller than 256px")
+                            for path, w, h in undersized_textures[:5]:
+                                self.log(f"     • {path} ({w}x{h})")
+                            if len(undersized_textures) > 5:
+                                self.log(f"     ... and {len(undersized_textures) - 5} more")
+                            self.log("   → Set 'Min Resolution: 256' to prevent over-compression when downscaling")
 
             self.stats_label.config(
                 text=f"Current: {format_size(total_current_size)} → Projected: {format_size(total_projected_size)} ({savings_percent:.1f}% savings)"

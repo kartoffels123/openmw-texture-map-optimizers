@@ -51,6 +51,7 @@ class ProcessingSettings:
     allow_compressed_passthrough: bool = False
     enable_atlas_downscaling: bool = False
     atlas_max_resolution: int = 4096
+    enforce_power_of_2: bool = True
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for multiprocessing"""
@@ -73,7 +74,8 @@ class ProcessingSettings:
             'auto_optimize_n_alpha': self.auto_optimize_n_alpha,
             'allow_compressed_passthrough': self.allow_compressed_passthrough,
             'enable_atlas_downscaling': self.enable_atlas_downscaling,
-            'atlas_max_resolution': self.atlas_max_resolution
+            'atlas_max_resolution': self.atlas_max_resolution,
+            'enforce_power_of_2': self.enforce_power_of_2
         }
 
 
@@ -241,6 +243,10 @@ def _calculate_new_dimensions_static(orig_width: int, orig_height: int, settings
         file_path: Optional path (for backward compatibility, prefer is_atlas)
         is_atlas: Whether this is a texture atlas (if True, overrides file_path check)
     """
+    # Guard against invalid dimensions (prevent division by zero)
+    if orig_width <= 0 or orig_height <= 0:
+        raise ValueError(f"Invalid texture dimensions: {orig_width}x{orig_height}")
+
     new_width, new_height = orig_width, orig_height
 
     # Determine if this is an atlas (prefer explicit flag, fallback to detection)
@@ -252,26 +258,36 @@ def _calculate_new_dimensions_static(orig_width: int, orig_height: int, settings
         return new_width, new_height
 
     scale = settings['scale_factor']
+    min_res = settings['min_resolution']
+
+    # Apply scale factor, but respect min_resolution as a floor (don't downscale below it)
     if scale != 1.0:
         new_width = int(orig_width * scale)
         new_height = int(orig_height * scale)
+
+        # If downscaling (scale < 1.0), enforce minimum resolution as a floor
+        if scale < 1.0 and min_res > 0:
+            # Prevent downscaling below min_resolution
+            if new_width < min_res or new_height < min_res:
+                # Don't downscale - keep original dimensions
+                new_width = orig_width
+                new_height = orig_height
+
+        # Ensure dimensions don't become 0 after scaling
+        new_width = max(1, new_width)
+        new_height = max(1, new_height)
 
     # Use atlas-specific max resolution if this is an atlas
     max_res = settings.get('atlas_max_resolution', 4096) if is_atlas else settings['max_resolution']
     if max_res > 0:
         max_dim = max(new_width, new_height)
-        if max_dim > max_res:
+        if max_dim > max_res and max_dim > 0:  # Guard against division by zero
             scale_factor = max_res / max_dim
             new_width = int(new_width * scale_factor)
             new_height = int(new_height * scale_factor)
-
-    min_res = settings['min_resolution']
-    if min_res > 0 and scale < 1.0:
-        min_dim = min(new_width, new_height)
-        if min_dim < min_res:
-            scale_factor = min_res / min_dim
-            new_width = int(new_width * scale_factor)
-            new_height = int(new_height * scale_factor)
+            # Ensure dimensions don't become 0
+            new_width = max(1, new_width)
+            new_height = max(1, new_height)
 
     return new_width, new_height
 
@@ -445,6 +461,10 @@ def _process_normal_map_static(input_dds: Path, output_dds: Path, is_nh: bool, s
             resize_method = settings['resize_method'].split()[0]
             if resize_method in FILTER_MAP:
                 cmd.extend(["-if", FILTER_MAP[resize_method]])
+
+        # Enforce power-of-2 dimensions if requested
+        if settings.get('enforce_power_of_2', False):
+            cmd.append("-pow2")
 
         cmd.extend(["-o", str(output_dds.parent), "-y", str(input_dds)])
 

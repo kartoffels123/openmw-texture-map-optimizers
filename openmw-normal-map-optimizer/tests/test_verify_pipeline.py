@@ -13,6 +13,10 @@ Or run from GUI:
 import sys
 import json
 from pathlib import Path
+
+# Add parent directory to path so we can import src module
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from src.core.processor import NormalMapProcessor, ProcessingSettings
 from src.core.dds_parser import parse_dds_header
 
