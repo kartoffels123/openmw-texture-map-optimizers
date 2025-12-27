@@ -1,8 +1,9 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -24,9 +25,10 @@ jobs:
             src/ \
             tools/
 
-      - name: Upload release asset
+      - name: Create release
         uses: softprops/action-gh-release@v1
         with:
           files: openmw-normal-map-optimizer.zip
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
