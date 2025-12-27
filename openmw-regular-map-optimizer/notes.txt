@@ -1,0 +1,36 @@
+should have similar functionality to the normal map optimizer however with some caveats:
+
+1. always ignore files ending in _N. or _NH. We have the normal map optimizer for that.
+2. handling for the case someone uses TGA (this would be equivalent to uncompressed)
+3. default behavior is a passthrough on "well compressed textures"
+3a. a well compressed texture is defined as either being 
+    BC1, BC3, BC2 wherein the author has designated the correct number of mipmaps for the resolution. A caveat is sometimes an author specifically picked an middling number of mipmaps.
+4. we wish to avoid UI textures and icon textures.
+5. we should only read folders which have the path "Textures" in them
+6. paths which contain icon, icons or bookart should be omitted. (these are usually outside the texture folder).
+6a. This could present an issue where a mod is titles "Icons of the ..." or such, where they are not referring to an actual in-game ui icon. However this is such an edge case, it should be up to the user to toggle off "omitted paths".
+
+
+differences from the normal map optimizer:
+TGA is possible.
+we are no longer working with normals
+as such:
+     BC5 is no longer a valid choice.
+    There is no distinction between _N and _NH as we are not doing normal maps.
+    Z reconstruction is no longer wanted.
+We can "tell" if a texture is invalid usually by the fact it is missing mipmaps now. so the default behavior should be "well compressed textures pass through"
+if a texture has only 1 mipmap we consider this texture invalid and trigger a reconstruction.
+uniform weighting and dithering are still an option but are off by default.
+
+BGR and BGRA are still the goto for small textures.
+BGR is if a texture has no alpha, BGRA is if a texture has alpha.
+
+We have a blacklist now of textures to not process.
+the user can choose to add to the blacklist.
+
+Whitelist:
+we are searching for specifically the path "Textures". This must be present.
+Blacklist:
+we ALWAYS want to omit icon, icons, bookart. these are usually outside the textures folder. These are UI textures.
+in some cases a user may have a folder that is in textures but contains the word icon or icons or bookart. but it is better to be safe than sorry.
+

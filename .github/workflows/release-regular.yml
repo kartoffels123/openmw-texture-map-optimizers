@@ -1,9 +1,9 @@
-name: Release Normal Map Optimizer
+name: Release Regular Texture Optimizer
 
 on:
   push:
     tags:
-      - 'normal-v*'
+      - 'regular-v*'
 
 jobs:
   build:
@@ -17,22 +17,22 @@ jobs:
 
       - name: Create release archive
         run: |
-          cd openmw-normal-map-optimizer
-          zip -r ../openmw-normal-map-optimizer.zip \
+          cd openmw-regular-map-optimizer
+          zip -r ../openmw-regular-map-optimizer.zip \
             optimizer.py \
             README.md \
-            "OpenMW Normal Map Optimizer.bat" \
+            "OpenMW Regular Map Optimizer.bat" \
             src/ \
             tools/
           # Bundle core package
           cd ..
-          zip -ur openmw-normal-map-optimizer.zip \
+          zip -ur openmw-regular-map-optimizer.zip \
             openmw-texture-optimizer-core/src/
 
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          files: openmw-normal-map-optimizer.zip
+          files: openmw-regular-map-optimizer.zip
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

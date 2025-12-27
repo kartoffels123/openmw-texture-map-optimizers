@@ -13,9 +13,13 @@ from .processor import (
     reset_parser_stats
 )
 
+# Also expose normal-specific settings
+from .normal_settings import NormalSettings
+
 __all__ = [
     'NormalMapProcessor',
     'ProcessingSettings',
+    'NormalSettings',
     'ProcessingResult',
     'AnalysisResult',
     'format_size',
