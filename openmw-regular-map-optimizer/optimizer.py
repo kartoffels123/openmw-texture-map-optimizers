@@ -14,24 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 core_path = Path(__file__).parent.parent / "openmw-texture-optimizer-core" / "src"
 sys.path.insert(0, str(core_path))
 
-# For now, print a placeholder message
-# GUI will be implemented after the processor is complete
-def main():
-    print("=" * 80)
-    print("OpenMW Regular Texture Optimizer")
-    print("=" * 80)
-    print()
-    print("This tool is under construction.")
-    print("The architecture has been set up, and the processor is being implemented.")
-    print()
-    print("Current status:")
-    print("  ✓ Core package structure created")
-    print("  ✓ Shared utilities extracted")
-    print("  ✓ Settings classes defined")
-    print("  ⏳ Processor implementation in progress")
-    print("  ⏳ GUI implementation pending")
-    print()
-    input("Press Enter to exit...")
+from src.gui.main_window import main
 
 if __name__ == "__main__":
     main()

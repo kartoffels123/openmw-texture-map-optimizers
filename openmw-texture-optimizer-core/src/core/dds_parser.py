@@ -206,6 +206,198 @@ def get_dds_info(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str]:
     return parse_dds_header(filepath)
 
 
+def parse_dds_header_extended(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str, int]:
+    """
+    Parse DDS header to extract dimensions, format, and mipmap count.
+
+    Returns:
+        ((width, height), format_string, mipmap_count) or (None, "UNKNOWN", 0) on error
+
+    The mipmap count is important for determining if a texture is "well compressed":
+    - A properly compressed texture should have log2(max(width, height)) + 1 mipmaps
+    - If mipmap_count == 1, the texture likely needs mipmap regeneration
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            # Read magic + main header + DX10 header (if present)
+            data = f.read(148)
+
+            if len(data) < 128:
+                return None, "UNKNOWN", 0
+
+            # Check magic number
+            magic = data[0:4]
+            if magic != b'DDS ':
+                return None, "UNKNOWN", 0
+
+            # Parse main header (little-endian)
+            header = data[4:128]
+
+            dw_size = struct.unpack('<I', header[0:4])[0]
+            dw_height = struct.unpack('<I', header[8:12])[0]
+            dw_width = struct.unpack('<I', header[12:16])[0]
+
+            # Mipmap count is at offset 24 in header (offset 28 from file start)
+            dw_mipmap_count = struct.unpack('<I', header[24:28])[0]
+
+            # If mipmap count is 0, treat as 1 (some files don't set this properly)
+            if dw_mipmap_count == 0:
+                dw_mipmap_count = 1
+
+            # Parse pixel format structure
+            pf_offset = 72
+            pf_flags = struct.unpack('<I', header[pf_offset+4:pf_offset+8])[0]
+            pf_fourcc = struct.unpack('<I', header[pf_offset+8:pf_offset+12])[0]
+            pf_rgb_bitcount = struct.unpack('<I', header[pf_offset+12:pf_offset+16])[0]
+
+            # Determine format
+            format_str = "UNKNOWN"
+
+            # Check for DX10 extended header
+            if pf_fourcc == FOURCC_DX10:
+                if len(data) >= 148:
+                    dxgi_format = struct.unpack('<I', data[128:132])[0]
+                    format_str = DXGI_FORMAT_NAMES.get(dxgi_format, f'DXGI_{dxgi_format}')
+
+            # Check for legacy FourCC formats
+            elif pf_flags & DDPF_FOURCC:
+                if pf_fourcc == FOURCC_DXT1:
+                    format_str = 'BC1_UNORM'
+                elif pf_fourcc == FOURCC_DXT3:
+                    format_str = 'BC2_UNORM'
+                elif pf_fourcc == FOURCC_DXT5:
+                    format_str = 'BC3_UNORM'
+                elif pf_fourcc == FOURCC_ATI1 or pf_fourcc == FOURCC_BC4U:
+                    format_str = 'BC4_UNORM'
+                elif pf_fourcc == FOURCC_BC4S:
+                    format_str = 'BC4_SNORM'
+                elif pf_fourcc == FOURCC_ATI2 or pf_fourcc == FOURCC_BC5U:
+                    format_str = 'BC5_UNORM'
+                else:
+                    try:
+                        fourcc_str = pf_fourcc.to_bytes(4, 'little').decode('ascii', errors='replace')
+                        if all(c.isprintable() or c.isspace() for c in fourcc_str):
+                            format_str = f'FOURCC_{fourcc_str}'
+                        else:
+                            format_str = f'FOURCC_{pf_fourcc:08X}'
+                    except:
+                        format_str = f'FOURCC_{pf_fourcc:08X}'
+
+            # Check for uncompressed RGB formats
+            elif pf_flags & DDPF_RGB:
+                if pf_rgb_bitcount == 32:
+                    pf_a_mask = struct.unpack('<I', header[pf_offset+28:pf_offset+32])[0]
+                    if pf_a_mask != 0:
+                        format_str = 'B8G8R8A8_UNORM'
+                    else:
+                        format_str = 'B8G8R8X8_UNORM'
+                elif pf_rgb_bitcount == 24:
+                    format_str = 'B8G8R8_UNORM'
+
+            return (dw_width, dw_height), format_str, dw_mipmap_count
+
+    except Exception:
+        return None, "UNKNOWN", 0
+
+
+def calculate_expected_mipmaps(width: int, height: int) -> int:
+    """
+    Calculate the expected number of mipmaps for a texture.
+
+    Formula: floor(log2(max(width, height))) + 1
+
+    Examples:
+        1024x1024 -> 11 mipmaps (1024, 512, 256, 128, 64, 32, 16, 8, 4, 2, 1)
+        512x512 -> 10 mipmaps
+        256x256 -> 9 mipmaps
+    """
+    import math
+    if width <= 0 or height <= 0:
+        return 1
+    max_dim = max(width, height)
+    return int(math.log2(max_dim)) + 1
+
+
+def has_adequate_mipmaps(width: int, height: int, mipmap_count: int) -> bool:
+    """
+    Check if a texture has an adequate number of mipmaps.
+
+    A texture is considered to have adequate mipmaps if:
+    - It has at least 2 mipmaps (more than just the base level), OR
+    - It's very small (max dimension <= 4) where 1 mipmap is acceptable
+
+    This is a lenient check - some authors intentionally use fewer mipmaps.
+    """
+    max_dim = max(width, height)
+
+    # Very small textures are fine with 1 mipmap
+    if max_dim <= 4:
+        return True
+
+    # For larger textures, we expect at least 2 mipmaps
+    # (1 mipmap means only base level, likely missing mipmaps)
+    return mipmap_count >= 2
+
+
+def parse_tga_header(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str]:
+    """
+    Parse TGA header to extract dimensions.
+
+    TGA files are always uncompressed (RGBA/BGRA) with no mipmaps.
+    This is a fast alternative to spawning texdiag.exe.
+
+    Returns:
+        ((width, height), format_string) or (None, "UNKNOWN") on error
+
+    Format is "TGA_RGBA" (32-bit) or "TGA_RGB" (24-bit).
+    Caller should treat as uncompressed and needing compression.
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            # TGA header is 18 bytes
+            header = f.read(18)
+
+            if len(header) < 18:
+                return None, "UNKNOWN"
+
+            # TGA header structure:
+            # Bytes 12-13: Width (little-endian)
+            # Bytes 14-15: Height (little-endian)
+            # Byte 16: Pixel depth (bits per pixel)
+
+            width = struct.unpack('<H', header[12:14])[0]
+            height = struct.unpack('<H', header[14:16])[0]
+            pixel_depth = header[16]
+
+            # Determine format based on pixel depth
+            if pixel_depth == 32:
+                format_str = "TGA_RGBA"  # Has alpha
+            elif pixel_depth == 24:
+                format_str = "TGA_RGB"   # No alpha
+            else:
+                format_str = "TGA"
+
+            return (width, height), format_str
+
+    except Exception:
+        return None, "UNKNOWN"
+
+
+def parse_tga_header_extended(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str, int]:
+    """
+    Parse TGA header - extended version matching DDS interface.
+
+    TGA files never have mipmaps, so mipmap_count is always 1.
+
+    Returns:
+        ((width, height), format_string, mipmap_count) or (None, "UNKNOWN", 0) on error
+    """
+    dims, fmt = parse_tga_header(filepath)
+    if dims:
+        return dims, fmt, 1  # TGA always has 1 "mipmap" (base level only)
+    return None, "UNKNOWN", 0
+
+
 if __name__ == "__main__":
     # Test on local DDS files
     import sys
