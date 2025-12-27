@@ -49,6 +49,8 @@ class ProcessingSettings:
     auto_fix_nh_to_n: bool = True
     auto_optimize_n_alpha: bool = True
     allow_compressed_passthrough: bool = False
+    enable_atlas_downscaling: bool = False
+    atlas_max_resolution: int = 4096
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for multiprocessing"""
@@ -69,7 +71,9 @@ class ProcessingSettings:
             'preserve_compressed_format': self.preserve_compressed_format,
             'auto_fix_nh_to_n': self.auto_fix_nh_to_n,
             'auto_optimize_n_alpha': self.auto_optimize_n_alpha,
-            'allow_compressed_passthrough': self.allow_compressed_passthrough
+            'allow_compressed_passthrough': self.allow_compressed_passthrough,
+            'enable_atlas_downscaling': self.enable_atlas_downscaling,
+            'atlas_max_resolution': self.atlas_max_resolution
         }
 
 
@@ -211,16 +215,49 @@ def _get_format_static(input_dds: Path) -> str:
     return format_str
 
 
-def _calculate_new_dimensions_static(orig_width: int, orig_height: int, settings: dict) -> Tuple[int, int]:
-    """Calculate new dimensions based on scale factor and constraints"""
+def _is_texture_atlas(file_path: Path) -> bool:
+    """Detect if a file is likely a texture atlas (should not be resized)"""
+    path_str = str(file_path).lower()
+
+    # Check for "atlas" in filename
+    if 'atlas' in file_path.stem.lower():
+        return True
+
+    # Check for "ATL" or "atl" directory in path
+    path_parts = [p.lower() for p in file_path.parts]
+    if 'atl' in path_parts:
+        return True
+
+    return False
+
+
+def _calculate_new_dimensions_static(orig_width: int, orig_height: int, settings: dict, file_path: Path = None, is_atlas: bool = False) -> Tuple[int, int]:
+    """Calculate new dimensions based on scale factor and constraints
+
+    Args:
+        orig_width: Original width
+        orig_height: Original height
+        settings: Processing settings dict
+        file_path: Optional path (for backward compatibility, prefer is_atlas)
+        is_atlas: Whether this is a texture atlas (if True, overrides file_path check)
+    """
     new_width, new_height = orig_width, orig_height
+
+    # Determine if this is an atlas (prefer explicit flag, fallback to detection)
+    if not is_atlas and file_path:
+        is_atlas = _is_texture_atlas(file_path)
+
+    # Skip resizing for texture atlases (unless explicitly enabled)
+    if is_atlas and not settings.get('enable_atlas_downscaling', False):
+        return new_width, new_height
 
     scale = settings['scale_factor']
     if scale != 1.0:
         new_width = int(orig_width * scale)
         new_height = int(orig_height * scale)
 
-    max_res = settings['max_resolution']
+    # Use atlas-specific max resolution if this is an atlas
+    max_res = settings.get('atlas_max_resolution', 4096) if is_atlas else settings['max_resolution']
     if max_res > 0:
         max_dim = max(new_width, new_height)
         if max_dim > max_res:
@@ -249,57 +286,62 @@ def _process_normal_map_static(input_dds: Path, output_dds: Path, is_nh: bool, s
         if not dimensions:
             return False
 
-        # Check for compressed passthrough (fast path - just copy the file)
-        # Only applies if texture is compressed AND correctly formatted (or fixable via rename)
-        if settings.get('allow_compressed_passthrough', False):
-            format_to_standard = {
-                'BC5_UNORM': 'BC5/ATI2',
-                'BC3_UNORM': 'BC3/DXT5',
-                'BC1_UNORM': 'BC1/DXT1'
-            }
-            current_format_standard = format_to_standard.get(format_name, None)
-
-            if current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']:
-                # Check if this compressed texture is "good" for its type
-                can_passthrough = False
-                needs_rename = False
-
-                # Check for mislabeling (NH textures without alpha)
-                if is_nh and settings.get('auto_fix_nh_to_n', True):
-                    # NH texture in BC5/BC1 is mislabeled
-                    if current_format_standard in ['BC5/ATI2', 'BC1/DXT1']:
-                        can_passthrough = True  # Can copy as-is
-                        needs_rename = True  # But rename _NH → _N
-                    elif current_format_standard == 'BC3/DXT5':
-                        can_passthrough = True  # BC3 is correct for NH
-                        needs_rename = False
-                else:
-                    # N texture - check for wasted alpha
-                    if settings.get('auto_optimize_n_alpha', True):
-                        if current_format_standard == 'BC3/DXT5':
-                            can_passthrough = False  # BC3 N has wasted alpha - must optimize to BC1
-                        else:
-                            can_passthrough = True  # BC5 or BC1 are good for N
-                    else:
-                        can_passthrough = True  # Auto-optimize disabled, accept as-is
-
-                if can_passthrough:
-                    # Handle renaming for mislabeled NH→N textures
-                    if needs_rename:
-                        # Change _nh.dds → _n.dds in the output path
-                        output_path_str = str(output_dds)
-                        if output_path_str.lower().endswith('_nh.dds'):
-                            corrected_output = Path(output_path_str[:-7] + '_n.dds')
-                            corrected_output.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(input_dds, corrected_output)
-                            return True
-                    else:
-                        # Copy with same name
-                        shutil.copy2(input_dds, output_dds)
-                        return True
-
         orig_width, orig_height = dimensions
-        new_width, new_height = _calculate_new_dimensions_static(orig_width, orig_height, settings)
+        new_width, new_height = _calculate_new_dimensions_static(orig_width, orig_height, settings, input_dds)
+
+        # Check for compressed passthrough (fast path - just copy the file)
+        # Only applies if texture is compressed AND correctly formatted AND won't be resized
+        if settings.get('allow_compressed_passthrough', False):
+            # Check if resize is needed
+            will_resize = (new_width != orig_width) or (new_height != orig_height)
+
+            # Passthrough only if no resize needed
+            if not will_resize:
+                format_to_standard = {
+                    'BC5_UNORM': 'BC5/ATI2',
+                    'BC3_UNORM': 'BC3/DXT5',
+                    'BC1_UNORM': 'BC1/DXT1'
+                }
+                current_format_standard = format_to_standard.get(format_name, None)
+
+                if current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']:
+                    # Check if this compressed texture is "good" for its type
+                    can_passthrough = False
+                    needs_rename = False
+
+                    # Check for mislabeling (NH textures without alpha)
+                    if is_nh and settings.get('auto_fix_nh_to_n', True):
+                        # NH texture in BC5/BC1 is mislabeled
+                        if current_format_standard in ['BC5/ATI2', 'BC1/DXT1']:
+                            can_passthrough = True  # Can copy as-is
+                            needs_rename = True  # But rename _NH → _N
+                        elif current_format_standard == 'BC3/DXT5':
+                            can_passthrough = True  # BC3 is correct for NH
+                            needs_rename = False
+                    else:
+                        # N texture - check for wasted alpha
+                        if settings.get('auto_optimize_n_alpha', True):
+                            if current_format_standard == 'BC3/DXT5':
+                                can_passthrough = False  # BC3 N has wasted alpha - must optimize to BC1
+                            else:
+                                can_passthrough = True  # BC5 or BC1 are good for N
+                        else:
+                            can_passthrough = True  # Auto-optimize disabled, accept as-is
+
+                    if can_passthrough:
+                        # Handle renaming for mislabeled NH→N textures
+                        if needs_rename:
+                            # Change _nh.dds → _n.dds in the output path
+                            output_path_str = str(output_dds)
+                            if output_path_str.lower().endswith('_nh.dds'):
+                                corrected_output = Path(output_path_str[:-7] + '_n.dds')
+                                corrected_output.parent.mkdir(parents=True, exist_ok=True)
+                                shutil.copy2(input_dds, corrected_output)
+                                return True
+                        else:
+                            # Copy with same name
+                            shutil.copy2(input_dds, output_dds)
+                            return True
 
         # Check if we're resizing
         will_resize = (new_width != orig_width) or (new_height != orig_height)
@@ -355,11 +397,12 @@ def _process_normal_map_static(input_dds: Path, output_dds: Path, is_nh: bool, s
 
         # Small texture override (only applies to uncompressed sources, not already-compressed)
         # Don't want to decompress small BC1/BC3/BC5 textures - wastes disk space
+        # Should NOT apply to compressed→compressed conversions (BC3→BC1)
         if settings['use_small_texture_override']:
-            # Only override if source is uncompressed (BGRA/BGR) or if we're already converting
             is_already_compressed = current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']
 
-            if not is_already_compressed or not should_preserve:
+            # Only override if source is truly uncompressed (BGRA/BGR)
+            if not is_already_compressed:
                 min_dim = min(new_width, new_height)
                 if is_nh:
                     threshold = settings['small_nh_threshold']
@@ -425,7 +468,7 @@ def _process_normal_map_static(input_dds: Path, output_dds: Path, is_nh: bool, s
 
 def _process_file_worker(args):
     """Worker function for parallel processing. Must be at module level for pickling."""
-    dds_file_path, source_dir_path, output_dir_path, is_nh, settings = args
+    dds_file_path, source_dir_path, output_dir_path, is_nh, settings, cached_analysis = args
 
     dds_file = Path(dds_file_path)
     source_dir = Path(source_dir_path)
@@ -441,12 +484,19 @@ def _process_file_worker(args):
     )
 
     try:
-        # Get both dimensions and format in a single subprocess call
-        orig_dims, orig_format = _get_dds_info_static(dds_file)
-        result.orig_dims = orig_dims
-        result.orig_format = orig_format
+        # Use cached analysis data if available
+        if cached_analysis:
+            orig_dims = (cached_analysis['width'], cached_analysis['height'])
+            orig_format = cached_analysis['format']
+            result.orig_dims = orig_dims
+            result.orig_format = orig_format
+        else:
+            # Fallback: Get both dimensions and format in a single subprocess call
+            orig_dims, orig_format = _get_dds_info_static(dds_file)
+            result.orig_dims = orig_dims
+            result.orig_format = orig_format
 
-        if not orig_dims:
+        if not result.orig_dims:
             result.error_msg = "Could not determine dimensions"
             return result
 
@@ -493,9 +543,24 @@ def _analyze_file_worker(args):
         width, height = dimensions
         result.width = width
         result.height = height
-        result.format = format_name
 
-        new_width, new_height = _calculate_new_dimensions_static(width, height, settings)
+        # Map common format names to our format identifiers
+        format_to_standard = {
+            'BC5_UNORM': 'BC5/ATI2',
+            'BC3_UNORM': 'BC3/DXT5',
+            'BC1_UNORM': 'BC1/DXT1',
+            'B8G8R8A8_UNORM': 'BGRA',
+            'B8G8R8X8_UNORM': 'BGR'
+        }
+        current_format_standard = format_to_standard.get(format_name, format_name)
+
+        # Store normalized format name for consistent comparisons
+        result.format = current_format_standard
+
+        # Check if this is an atlas (do this once to avoid duplicate checks)
+        is_atlas = _is_texture_atlas(dds_file)
+
+        new_width, new_height = _calculate_new_dimensions_static(width, height, settings, is_atlas=is_atlas)
         result.new_width = new_width
         result.new_height = new_height
 
@@ -511,16 +576,6 @@ def _analyze_file_worker(args):
         # 5. Small texture override (only for uncompressed sources - prevents decompressing small BC1/BC3/BC5)
 
         target_format = settings['nh_format'] if is_nh else settings['n_format']
-
-        # Map common format names to our format identifiers
-        format_to_standard = {
-            'BC5_UNORM': 'BC5/ATI2',
-            'BC3_UNORM': 'BC3/DXT5',
-            'BC1_UNORM': 'BC1/DXT1',
-            'B8G8R8A8_UNORM': 'BGRA',
-            'B8G8R8X8_UNORM': 'BGR'
-        }
-        current_format_standard = format_to_standard.get(format_name, format_name)
 
         # Auto-fix: NH-labeled textures with no-alpha formats should be treated as N
         if is_nh and settings['auto_fix_nh_to_n']:
@@ -560,11 +615,12 @@ def _analyze_file_worker(args):
 
         # Small texture override (only applies to uncompressed sources, not already-compressed)
         # Don't want to decompress small BC1/BC3/BC5 textures - wastes disk space
+        # Should NOT apply to compressed→compressed conversions (BC3→BC1)
         if settings['use_small_texture_override']:
-            # Only override if source is uncompressed (BGRA/BGR) or if we're already converting
             is_already_compressed = current_format_standard in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']
 
-            if not is_already_compressed or not should_preserve:
+            # Only override if source is truly uncompressed (BGRA/BGR)
+            if not is_already_compressed:
                 min_dim_output = min(new_width, new_height)
                 if is_nh:
                     threshold = settings['small_nh_threshold']
@@ -626,9 +682,16 @@ def _analyze_file_worker(args):
             elif current_format_standard == 'BC3/DXT5' and target_format == 'BC1/DXT1':
                 warnings.append(f"N texture with unused alpha in BC3 - auto-optimized to BC1")
 
-        # Info: Preserved compressed format (only if it's a good format for the type)
-        if should_preserve and current_format_standard == target_format:
-            warnings.append(f"Compressed format {current_format_standard} preserved (not resizing)")
+        # Info: Preserved compressed format message is REMOVED
+        # This was misleading - "preserve format" means keep the same format during reprocessing,
+        # NOT that the file is being copied without processing.
+        # Passthrough info messages (above) already cover the actual copy-without-processing case.
+
+        # Info: Texture atlas detected (will not be resized)
+        if is_atlas and width > 0 and height > 0:
+            max_dim = max(width, height)
+            if max_dim > settings['max_resolution'] and settings['max_resolution'] > 0:
+                warnings.append(f"Texture atlas detected - resize skipped despite size {width}x{height} exceeding max resolution")
 
         # Warning: N texture saved to format with unused alpha channel (after auto-fix logic)
         if not is_nh and not settings['auto_optimize_n_alpha']:
@@ -706,6 +769,8 @@ class NormalMapProcessor:
 
     def __init__(self, settings: ProcessingSettings):
         self.settings = settings
+        self.analysis_cache: Dict[str, AnalysisResult] = {}  # Cache analysis results by relative path
+        self._settings_hash = None  # Track settings to invalidate cache
 
     def find_normal_maps(self, input_dir: Path) -> Tuple[List[Path], List[Path]]:
         """
@@ -738,7 +803,7 @@ class NormalMapProcessor:
         return n_files, nh_files
 
     def analyze_files(self, input_dir: Path, progress_callback: Optional[Callable[[int, int], None]] = None) -> List[AnalysisResult]:
-        """Analyze all normal maps and return analysis results"""
+        """Analyze all normal maps and return analysis results. Results are cached for processing."""
         n_files, nh_files = self.find_normal_maps(input_dir)
         all_files = n_files + nh_files
 
@@ -746,6 +811,10 @@ class NormalMapProcessor:
             return []
 
         settings_dict = self.settings.to_dict()
+
+        # Store settings hash to detect changes
+        import json
+        self._settings_hash = hash(json.dumps(settings_dict, sort_keys=True))
 
         # For analysis (dry runs), use sequential if fast parser is available
         # Fast parser is ~0.08ms per file, so parallel overhead isn't worth it
@@ -761,18 +830,32 @@ class NormalMapProcessor:
         else:
             results = self._analyze_files_sequential(all_files, input_dir, settings_dict, progress_callback)
 
+        # Cache results by relative path
+        self.analysis_cache.clear()
+        for result in results:
+            self.analysis_cache[result.relative_path] = result
+
         return results
 
     def process_files(self, input_dir: Path, output_dir: Path,
                      progress_callback: Optional[Callable[[int, int, ProcessingResult], None]] = None) -> List[ProcessingResult]:
-        """Process all normal maps and return results"""
+        """Process all normal maps and return results. Requires analysis to be run first."""
+        # Check if analysis has been run
+        import json
+        settings_dict = self.settings.to_dict()
+        current_hash = hash(json.dumps(settings_dict, sort_keys=True))
+
+        if not self.analysis_cache or self._settings_hash != current_hash:
+            raise RuntimeError(
+                "Analysis must be run before processing. Please run analyze_files() first, "
+                "or re-run it if settings have changed."
+            )
+
         n_files, nh_files = self.find_normal_maps(input_dir)
         total_files = len(n_files) + len(nh_files)
 
         if total_files == 0:
             return []
-
-        settings_dict = self.settings.to_dict()
 
         if self.settings.enable_parallel and total_files > 1:
             results = self._process_files_parallel(n_files, nh_files, input_dir, output_dir,
@@ -829,9 +912,13 @@ class NormalMapProcessor:
         """Process files in parallel"""
         all_tasks = []
         for f in n_files:
-            all_tasks.append((str(f), str(source_dir), str(output_dir), False, settings))
+            rel_path = str(f.relative_to(source_dir))
+            cached = self._get_cached_analysis(rel_path)
+            all_tasks.append((str(f), str(source_dir), str(output_dir), False, settings, cached))
         for f in nh_files:
-            all_tasks.append((str(f), str(source_dir), str(output_dir), True, settings))
+            rel_path = str(f.relative_to(source_dir))
+            cached = self._get_cached_analysis(rel_path)
+            all_tasks.append((str(f), str(source_dir), str(output_dir), True, settings, cached))
 
         results = []
         current = 0
@@ -872,7 +959,9 @@ class NormalMapProcessor:
 
         for f in n_files:
             current += 1
-            args = (str(f), str(source_dir), str(output_dir), False, settings)
+            rel_path = str(f.relative_to(source_dir))
+            cached = self._get_cached_analysis(rel_path)
+            args = (str(f), str(source_dir), str(output_dir), False, settings, cached)
             result = _process_file_worker(args)
             results.append(result)
             if progress_callback:
@@ -880,13 +969,27 @@ class NormalMapProcessor:
 
         for f in nh_files:
             current += 1
-            args = (str(f), str(source_dir), str(output_dir), True, settings)
+            rel_path = str(f.relative_to(source_dir))
+            cached = self._get_cached_analysis(rel_path)
+            args = (str(f), str(source_dir), str(output_dir), True, settings, cached)
             result = _process_file_worker(args)
             results.append(result)
             if progress_callback:
                 progress_callback(current, total, result)
 
         return results
+
+    def _get_cached_analysis(self, relative_path: str) -> Optional[dict]:
+        """Get cached analysis data for a file"""
+        if relative_path in self.analysis_cache:
+            result = self.analysis_cache[relative_path]
+            return {
+                'width': result.width,
+                'height': result.height,
+                'format': result.format,
+                'target_format': result.target_format
+            }
+        return None
 
 
 def format_size(bytes_size: int) -> str:

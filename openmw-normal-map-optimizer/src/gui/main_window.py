@@ -8,6 +8,7 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 import webbrowser
 import time
+import json
 from pathlib import Path
 from multiprocessing import cpu_count
 
@@ -35,6 +36,14 @@ class NormalMapProcessorGUI:
         self.root.title("Normal Map Processor")
         self.root.geometry(f"{self.WINDOW_WIDTH}x{self.WINDOW_HEIGHT}")
 
+        # State
+        self.processing = False
+        self.total_input_size = 0
+        self.total_output_size = 0
+        self.processed_count = 0
+        self.failed_count = 0
+        self.processor = None  # Store processor instance to maintain cache
+
         # UI Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar()
@@ -59,14 +68,20 @@ class NormalMapProcessorGUI:
         self.auto_optimize_n_alpha = tk.BooleanVar(value=True)
         self.allow_compressed_passthrough = tk.BooleanVar(value=False)
 
-        # State
-        self.processing = False
-        self.total_input_size = 0
-        self.total_output_size = 0
-        self.processed_count = 0
-        self.failed_count = 0
+        # Atlas settings
+        self.enable_atlas_downscaling = tk.BooleanVar(value=False)
+        self.atlas_max_resolution = tk.IntVar(value=4096)
 
         self.create_widgets()
+
+        # Attach change callbacks AFTER widgets are created to avoid triggering during init
+        for var in [self.n_format, self.nh_format, self.resize_method, self.scale_factor,
+                    self.max_resolution, self.min_resolution, self.invert_y, self.reconstruct_z,
+                    self.uniform_weighting, self.use_dithering, self.use_small_texture_override,
+                    self.small_nh_threshold, self.small_n_threshold, self.preserve_compressed_format,
+                    self.auto_fix_nh_to_n, self.auto_optimize_n_alpha, self.allow_compressed_passthrough,
+                    self.enable_atlas_downscaling, self.atlas_max_resolution]:
+            var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
         notebook = ttk.Notebook(self.root)
@@ -138,7 +153,10 @@ class NormalMapProcessorGUI:
             "If any of the text below doesn't make sense to you and you just want the game to run\n"
             "better, just use my default settings. On the Settings tab, the only thing\n"
             "I'd vary is setting Scale Factor from 1.0 to 0.5 if you want extra performance.\n\n"
-            "⚠ ALWAYS DO A DRY RUN.\n\n"
+            "⚠ DRY RUN IS NOW MANDATORY\n"
+            "The 'Process Files' button is disabled until you run a dry run.\n"
+            "Don't worry - it takes only seconds, even for 10,000+ files!\n"
+            "This ensures you see what will happen and provides instant processing via caching.\n\n"
             "IMPORTANT NOTES:\n"
             "1. Your normal maps use DirectX-style (G=Y-), Not OpenGL-style (G=Y+).\n"
             "   I cannot auto-detect inverted Y - use the checkbox if needed.\n\n"
@@ -160,7 +178,7 @@ class NormalMapProcessorGUI:
             "• Regenerates mipmap chains (textures may have bad/missing mipmaps)\n"
             "• Reconstructs Z channels (sometimes missing or incorrect)\n\n"
             "Note on Recompression: Usually pretty harmless! \"Double compression\"\n"
-            "produces nearly identical results (e.g., PSNR ~64 dB, MSE ~0.03) as long as\n"
+            "produces nearly identical results (e.g., PSNR ~50 dB, MSE ~0.05) as long as\n"
             "no intermediate operation (e.g., resizing, color changes) is occurring.\n\n"
             "Want to avoid reprocessing entirely? Enable \"Allow well-compressed textures\n"
             "to passthrough\" in Settings > Smart Format Handling.\n\n"
@@ -232,28 +250,32 @@ class NormalMapProcessorGUI:
         decision_flow_text = (
             "The tool applies format decisions in this priority order:\n\n"
             "Priority 0: Compressed Passthrough (if enabled - NOT RECOMMENDED)\n"
-            "  ⚠ Well-compressed textures → Simply copied, no processing\n"
+            "  ⚠ Well-compressed textures → Simply COPIED, no processing at all\n"
             "  ⚠ NH in BC3 → passthrough ✓ | N in BC5/BC1 → passthrough ✓\n"
             "  ⚠ NH in BC5/BC1 → passthrough + rename to _N ✓ (mislabeled)\n"
-            "  ⚠ N in BC3 → reprocess (wasted alpha)\n"
+            "  ⚠ N in BC3 → reprocess (wasted alpha, not well-compressed)\n"
             "  ⚠ Skips Z-channel reconstruction and mipmap regeneration\n"
-            "  ⚠ Only use if CERTAIN compressed textures are already correct\n\n"
+            "  ⚠ Only use if CERTAIN your compressed textures are already correct\n\n"
             "Priority 1: Format Options (_N and _NH)\n"
             "  • NH textures → User's NH format (default: BC3/DXT5)\n"
             "  • N textures → User's N format (default: BC5/ATI2)\n\n"
-            "Priority 2: Mislabeled NH→N textures\n"
-            "  • texture_NH.dds in BC5/BC1/BGR → Treated as N texture, uses N format\n\n"
-            "Priority 3: Preserve compressed formats when not downscaling\n"
+            "Priority 2: Mislabeled NH→N textures (auto-fix)\n"
+            "  • texture_NH.dds in BC5/BC1/BGR → Treated as N texture, uses N format\n"
+            "  • Reason: These formats have no alpha channel\n\n"
+            "Priority 3: Preserve compressed formats when not resizing\n"
+            "  • Prevents converting BC1→BC5 (doubles file size, no quality gain)\n"
             "  • NH textures: Only BC3 preserved (has alpha)\n"
             "  • N textures: Only BC5 or BC1 preserved (no wasted alpha)\n"
-            "  • BC3 N textures are NOT preserved (wasted alpha)\n\n"
+            "  • BC3 N textures are NOT preserved (wasted alpha)\n"
+            "  • Files still REPROCESSED for Z-reconstruction + mipmaps\n\n"
             "Priority 4: Auto-optimize formats with wasted alpha\n"
-            "  • N textures in BGRA → User's N format\n"
-            "  • N textures in BC3 → BC1 (half file size)\n\n"
+            "  • N textures in BGRA → User's N format (compress & remove alpha)\n"
+            "  • N textures in BC3 → BC1 (half file size, same compression quality)\n\n"
             "Priority 5: Small texture override (only for uncompressed sources)\n"
-            "  • NH ≤256px → BGRA (only if source is BGRA/uncompressed)\n"
-            "  • N ≤128px → BGR (only if source is BGR/BGRA/uncompressed)\n"
-            "  • Already-compressed small textures kept compressed\n\n"
+            "  • NH ≤256px → BGRA (only if source is uncompressed)\n"
+            "  • N ≤128px → BGR (only if source is uncompressed)\n"
+            "  • Already-compressed small textures kept compressed\n"
+            "  • Prevents decompressing small BC1/BC3/BC5 textures\n\n"
             "Example: N texture in BC3, not downscaling, small override disabled\n"
             "  → Step 1: BC5 (user N format)\n"
             "  → Step 2: No change (not NH)\n"
@@ -665,6 +687,28 @@ class NormalMapProcessorGUI:
                       "5. Small texture override (only for uncompressed sources)",
                  font=("", 8), wraplength=600, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
+        # Texture Atlas Settings (Collapsible)
+        frame_atlas = ttk.LabelFrame(scrollable, text="Texture Atlas Settings (Advanced)", padding=10)
+        frame_atlas.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_atlas,
+                 text="By default, texture atlases are automatically detected and protected from resizing.\n"
+                      "Detection: Filename contains 'atlas' or path contains 'ATL' directory.\n"
+                      "Atlases still receive format conversion, Z-reconstruction, and mipmap regeneration.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Checkbutton(frame_atlas, text="Enable downscaling for texture atlases (NOT recommended)",
+                       variable=self.enable_atlas_downscaling).grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_atlas,
+                 text="⚠ Atlases are large for a reason - they pack many smaller textures into one file. Downscaling reduces detail for all packed textures.",
+                 font=("", 8), wraplength=600, justify="left", foreground="red").grid(row=2, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_atlas, text="Max resolution for atlases:", font=("", 9)).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=5)
+        ttk.Entry(frame_atlas, textvariable=self.atlas_max_resolution, width=10).grid(row=3, column=1, sticky="w", pady=5)
+        ttk.Label(frame_atlas,
+                 text="Only applies if 'Enable downscaling for texture atlases' is checked. Default: 4096",
+                 font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
+
     def _create_process_tab(self, tab_process):
         """Create the processing tab with progress log and controls"""
         # Progress Bar
@@ -700,7 +744,9 @@ class NormalMapProcessorGUI:
         self.analyze_btn.pack(side="left", padx=5)
         self.export_btn = ttk.Button(button_frame, text="Export Analysis Report", command=self.export_log, state="disabled")
         self.export_btn.pack(side="left", padx=5)
-        self.process_btn = ttk.Button(button_frame, text="Process Files", command=self.start_processing)
+        self.export_settings_btn = ttk.Button(button_frame, text="Export Settings", command=self.export_settings)
+        self.export_settings_btn.pack(side="left", padx=5)
+        self.process_btn = ttk.Button(button_frame, text="Process Files", command=self.start_processing, state="disabled")
         self.process_btn.pack(side="left", padx=5)
 
     def _create_version_tab(self, tab_version):
@@ -737,7 +783,7 @@ class NormalMapProcessorGUI:
         frame_version.pack(fill="x", padx=10, pady=5)
 
         version_text = (
-            "Version 0.7\n"
+            "Version 0.8\n"
             "Features:\n"
             "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
             "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
@@ -748,11 +794,23 @@ class NormalMapProcessorGUI:
             "  • Smart format preservation (keeps compressed formats when not downscaling)\n"
             "  • Auto-fix mislabeled NH→N textures (BGR/BC5/BC1 formats)\n"
             "  • Auto-optimize N textures with unused alpha (BGRA→user N format, BC3→BC1)\n"
-            "  • Comprehensive warning system for format issues\n"
+            "  • Comprehensive warning system with context-aware auto-fix detection\n"
             "  • Dry run analysis with size projections and detailed conversion breakdown\n"
+            "  • Analysis caching for instant processing after dry run\n"
             "  • Detailed processing logs and statistics\n"
             "  • Export analysis reports\n"
             "  • Parallel processing (multi-core support for faster batch operations)\n\n"
+            "Version 0.8 Updates:\n"
+            "  • Analysis caching - headers read once, reused during processing\n"
+            "  • Enforced workflow - Process Files disabled until dry run completes\n"
+            "  • Auto-cache invalidation when settings change\n"
+            "  • Texture atlas protection - auto-detects 'atlas' filenames or ATL directories\n"
+            "  • Smart resolution warnings show whether current settings will auto-fix\n"
+            "  • Cleaner output - consolidated sections, less redundancy\n"
+            "  • Better terminology - 'Recalculate' vs 'Convert' for clarity\n"
+            "  • Format comparison fixed (BC1_UNORM → BC1/DXT1 normalization)\n"
+            "  • Performance - stores only 5 file examples instead of full lists\n"
+            "  • Removed misleading 'preserved format' messages\n\n"
             "Version 0.7 Updates:\n"
             "  • NEW: ~100x faster dry run analysis (6,000 files in <1 second vs 1 minute)\n"
             "  • NEW: Direct DDS header parsing eliminates subprocess overhead\n"
@@ -829,6 +887,36 @@ class NormalMapProcessorGUI:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to export report:\n{str(e)}")
 
+    def export_settings(self):
+        """Export current settings to a JSON file for test verification"""
+        file_path = filedialog.asksaveasfilename(
+            title="Export Settings for Testing",
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+            initialfile="optimizer_settings.json"
+        )
+
+        if file_path:
+            try:
+                settings = self.get_settings()
+                settings_dict = settings.to_dict()
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(settings_dict, f, indent=2)
+
+                messagebox.showinfo("Success",
+                    f"Settings exported to:\n{file_path}\n\n"
+                    f"Use with test_verify_pipeline.py:\n"
+                    f"python test_verify_pipeline.py <input> <output> --settings {Path(file_path).name}")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to export settings:\n{str(e)}")
+
+    def invalidate_analysis_cache(self, *args):
+        """Invalidate analysis cache when settings change"""
+        if self.processor:
+            self.processor = None
+            self.process_btn.configure(state="disabled")
+
     def get_settings(self) -> ProcessingSettings:
         """Convert GUI variables to ProcessingSettings object"""
         return ProcessingSettings(
@@ -851,7 +939,9 @@ class NormalMapProcessorGUI:
             preserve_compressed_format=self.preserve_compressed_format.get(),
             auto_fix_nh_to_n=self.auto_fix_nh_to_n.get(),
             auto_optimize_n_alpha=self.auto_optimize_n_alpha.get(),
-            allow_compressed_passthrough=self.allow_compressed_passthrough.get()
+            allow_compressed_passthrough=self.allow_compressed_passthrough.get(),
+            enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
+            atlas_max_resolution=self.atlas_max_resolution.get()
         )
 
     def start_analysis(self):
@@ -901,16 +991,25 @@ class NormalMapProcessorGUI:
         try:
             reset_parser_stats()  # Reset statistics at start of dry run
             settings = self.get_settings()
-            processor = NormalMapProcessor(settings)
+
+            # Create new processor instance (invalidates old cache)
+            self.processor = NormalMapProcessor(settings)
 
             input_dir = Path(self.input_dir.get())
             self.log("=== Dry Run (Preview) ===\n")
+
+            # Log analysis mode for debugging
+            from src.core.processor import _HAS_FAST_PARSER
+            if _HAS_FAST_PARSER:
+                self.log("Using fast sequential analysis (DDS header parser)")
+            else:
+                self.log("Using texdiag-based analysis")
 
             # Define progress callback
             def progress_callback(current, total):
                 pass  # Analysis results are logged in batch below
 
-            results = processor.analyze_files(input_dir, progress_callback)
+            results = self.processor.analyze_files(input_dir, progress_callback)
 
             if not results:
                 self.log("No normal map files found!")
@@ -920,16 +1019,16 @@ class NormalMapProcessorGUI:
             # Count files
             n_count = sum(1 for r in results if not r.is_nh)
             nh_count = sum(1 for r in results if r.is_nh)
-            self.log(f"Found {nh_count} _nh.dds file(s)")
-            self.log(f"Found {n_count} _n.dds file(s)")
-            self.log(f"Total: {len(results)} normal map file(s)\n")
+            self.log(f"Found {len(results)} normal map files ({n_count} _n.dds, {nh_count} _nh.dds)\n")
 
             # Analyze results
             total_current_size = sum(r.file_size for r in results)
             total_projected_size = sum(r.projected_size for r in results if not r.error)
             format_stats = {}
             oversized_textures = []
+            oversized_will_fix = []
             undersized_textures = []
+            undersized_will_fix = []
             all_warnings = []
             all_info_messages = []
 
@@ -937,7 +1036,8 @@ class NormalMapProcessorGUI:
                 'resize_and_reformat': [],
                 'resize_only': [],
                 'reformat_only': [],
-                'no_change': []
+                'no_change': [],
+                'passthrough': []
             }
 
             for i, result in enumerate(results, 1):
@@ -951,21 +1051,34 @@ class NormalMapProcessorGUI:
                 format_stats[result.format]['count'] += 1
                 format_stats[result.format]['size'] += result.file_size
 
-                # Check size warnings
+                # Check size warnings and whether they'll be auto-fixed
                 if result.width and result.height:
                     max_dim = max(result.width, result.height)
                     min_dim = min(result.width, result.height)
+                    will_resize = (result.new_width != result.width) or (result.new_height != result.height)
 
                     if max_dim > 2048:
                         oversized_textures.append((result.relative_path, result.width, result.height))
+                        if will_resize and max(result.new_width, result.new_height) <= 2048:
+                            oversized_will_fix.append((result.relative_path, result.width, result.height))
+
                     if min_dim < 256:
                         undersized_textures.append((result.relative_path, result.width, result.height))
+                        if will_resize and min(result.new_width, result.new_height) >= 256:
+                            undersized_will_fix.append((result.relative_path, result.width, result.height))
 
                     # Categorize action
                     will_resize = (result.new_width != result.width) or (result.new_height != result.height)
                     will_reformat = result.format != result.target_format
 
-                    if will_resize and will_reformat:
+                    # Check if this is a passthrough file (will be copied as-is)
+                    is_passthrough = any('Compressed passthrough' in w for w in (result.warnings or []))
+
+                    if is_passthrough:
+                        action_groups['passthrough'].append(
+                            (result.relative_path, result.width, result.height, result.format)
+                        )
+                    elif will_resize and will_reformat:
                         action_groups['resize_and_reformat'].append(
                             (result.relative_path, result.width, result.height, result.format,
                              result.new_width, result.new_height, result.target_format)
@@ -994,32 +1107,46 @@ class NormalMapProcessorGUI:
                             all_warnings.append((result.relative_path, warning))
 
             # Build detailed conversion summary
-            format_conversions = {}  # (source_format, target_format) -> count
+            format_conversions = {}  # (source_format, target_format) -> count (actual format changes only)
             resize_conversions = {}  # (original_size, new_size) -> count
+            reprocessing_only = {}  # (format) -> count (same format, reprocessed for Z/mipmaps)
             combined_conversions = {}  # (source_fmt, target_fmt, resize_type) -> [file_list]
 
             for result in results:
                 if result.error:
                     continue
 
-                # Track format conversions
-                if result.format != result.target_format:
+                will_resize = (result.new_width != result.width) or (result.new_height != result.height)
+                will_reformat = result.format != result.target_format
+                is_passthrough = any('Compressed passthrough' in w for w in (result.warnings or []))
+
+                # Track actual format conversions only
+                if will_reformat:
                     key = (result.format, result.target_format)
                     format_conversions[key] = format_conversions.get(key, 0) + 1
 
+                # Track same-format reprocessing (Z-reconstruction, mipmaps)
+                # Exclude passthrough files (they are copied as-is, not reprocessed)
+                if not will_reformat and not will_resize and not is_passthrough:
+                    if result.format not in reprocessing_only:
+                        reprocessing_only[result.format] = 0
+                    reprocessing_only[result.format] += 1
+
                 # Track resize conversions
                 if result.width and result.new_width:
-                    if (result.width != result.new_width) or (result.height != result.new_height):
+                    if will_resize:
                         resize_key = (f"{result.width}x{result.height}", f"{result.new_width}x{result.new_height}")
                         resize_conversions[resize_key] = resize_conversions.get(resize_key, 0) + 1
 
                 # Track combined conversions for detailed breakdown
-                will_resize = (result.new_width != result.width) or (result.new_height != result.height)
+                # Only store first 5 examples to avoid memory/performance issues with large datasets
                 resize_type = "resize" if will_resize else "no_resize"
                 combo_key = (result.format, result.target_format, resize_type)
                 if combo_key not in combined_conversions:
-                    combined_conversions[combo_key] = []
-                combined_conversions[combo_key].append(result.relative_path)
+                    combined_conversions[combo_key] = {'count': 0, 'examples': []}
+                combined_conversions[combo_key]['count'] += 1
+                if len(combined_conversions[combo_key]['examples']) < 5:
+                    combined_conversions[combo_key]['examples'].append(result.relative_path)
 
             # Display stats
             self.log("\n=== Current State ===")
@@ -1031,11 +1158,24 @@ class NormalMapProcessorGUI:
             for fmt, stats in sorted(format_stats.items()):
                 self.log(f"{fmt}: {stats['count']} files, {format_size(stats['size'])} total")
 
-            # Show format conversion summary
+            # Show format conversion summary (actual conversions only)
             if format_conversions:
                 self.log("\n=== Format Conversions ===")
-                for (src_fmt, dst_fmt), count in sorted(format_conversions.items(), key=lambda x: -x[1]):
-                    self.log(f"{src_fmt} → {dst_fmt}: {count} files")
+                # Use combined_conversions to show resize info
+                for (src_fmt, dst_fmt, resize_type), data in sorted(combined_conversions.items(),
+                                                                      key=lambda x: -x[1]['count']):
+                    # Only show actual format conversions (not same-format reprocessing)
+                    if src_fmt != dst_fmt:
+                        resize_label = " + resize" if resize_type == "resize" else ""
+                        self.log(f"{src_fmt} → {dst_fmt}{resize_label}: {data['count']} files")
+
+            # Show reprocessing summary (same format, Z-reconstruction + mipmaps)
+            if reprocessing_only:
+                total_reprocessed = sum(reprocessing_only.values())
+                self.log(f"\n=== Reprocessing ({total_reprocessed} files, same format) ===")
+                for fmt, count in sorted(reprocessing_only.items(), key=lambda x: -x[1]):
+                    self.log(f"  {fmt}: {count} files")
+                self.log("\nNote: Files will be reprocessed for Z-reconstruction + mipmap regeneration.")
 
             # Show resize summary
             if resize_conversions:
@@ -1057,43 +1197,47 @@ class NormalMapProcessorGUI:
                     for src_res, dst_res, count in sorted(conversions, key=lambda x: -x[2]):
                         self.log(f"  {src_res} → {dst_res}: {count} files")
 
-            # Show detailed combined breakdown
-            if combined_conversions:
-                self.log("\n=== Detailed Conversion Breakdown ===")
-                for (src_fmt, dst_fmt, resize_type), files in sorted(combined_conversions.items(), key=lambda x: -len(x[1])):
-                    count = len(files)
+            # Show detailed conversion breakdown with examples (exclude same-format no-resize reprocessing)
+            actual_conversions = {k: v for k, v in combined_conversions.items()
+                                 if k[0] != k[1] or k[2] == "resize"}  # Include if format changes OR resizing
+
+            if actual_conversions and len(actual_conversions) <= 15:  # Only show if not too many categories
+                self.log("\n=== Conversion Examples ===")
+                for (src_fmt, dst_fmt, resize_type), data in sorted(actual_conversions.items(), key=lambda x: -x[1]['count']):
+                    count = data['count']
+                    examples = data['examples']
                     resize_label = " + resize" if resize_type == "resize" else ""
                     self.log(f"{src_fmt} → {dst_fmt}{resize_label}: {count} files")
-                    # Show first 3 examples
-                    if count <= 3:
-                        for f in files:
-                            self.log(f"    • {f}")
-                    else:
-                        for f in files[:3]:
-                            self.log(f"    • {f}")
+                    # Show examples (we stored max 5)
+                    for f in examples[:3]:
+                        self.log(f"    • {f}")
+                    if count > 3:
                         self.log(f"    ... and {count - 3} more")
 
-            # Show actions
-            self.log("\n=== Actions to be Taken ===")
-            self.log(f"Resize + Reformat: {len(action_groups['resize_and_reformat'])} files")
-            if action_groups['resize_and_reformat'] and len(action_groups['resize_and_reformat']) <= 3:
-                for path, w, h, fmt, new_w, new_h, new_fmt in action_groups['resize_and_reformat']:
-                    self.log(f"  • {path}: {w}×{h} {fmt} → {new_w}×{new_h} {new_fmt}")
+            # Show actions summary
+            self.log("\n=== Summary ===")
+            total_with_changes = len(action_groups['resize_and_reformat']) + len(action_groups['resize_only']) + len(action_groups['reformat_only'])
+            if total_with_changes > 0:
+                self.log(f"Files to modify: {total_with_changes}")
+                if len(action_groups['resize_and_reformat']) > 0:
+                    self.log(f"  • Resize + Convert: {len(action_groups['resize_and_reformat'])}")
+                if len(action_groups['resize_only']) > 0:
+                    self.log(f"  • Resize only: {len(action_groups['resize_only'])}")
+                if len(action_groups['reformat_only']) > 0:
+                    self.log(f"  • Convert only: {len(action_groups['reformat_only'])}")
 
-            self.log(f"Resize only: {len(action_groups['resize_only'])} files")
-            if action_groups['resize_only'] and len(action_groups['resize_only']) <= 3:
-                for path, w, h, fmt, new_w, new_h in action_groups['resize_only']:
-                    self.log(f"  • {path}: {w}×{h} → {new_w}×{new_h} (keeping {fmt})")
+            if len(action_groups['no_change']) > 0:
+                self.log(f"Files to recalculate: {len(action_groups['no_change'])} (same format/size, Z-fix + mipmaps)")
 
-            self.log(f"Reformat only: {len(action_groups['reformat_only'])} files")
-            if action_groups['reformat_only'] and len(action_groups['reformat_only']) <= 3:
-                for path, w, h, fmt, new_fmt in action_groups['reformat_only']:
-                    self.log(f"  • {path}: {fmt} → {new_fmt} (keeping {w}×{h})")
+            if len(action_groups['passthrough']) > 0:
+                self.log(f"Files to pass through: {len(action_groups['passthrough'])} (copied as-is, no processing)")
 
-            self.log(f"No change: {len(action_groups['no_change'])} files")
-            if action_groups['no_change'] and len(action_groups['no_change']) <= 3:
-                for path, w, h, fmt in action_groups['no_change']:
-                    self.log(f"  • {path}: {w}×{h} {fmt} (unchanged)")
+            # Update the final message to exclude passthrough files
+            files_to_process = len(results) - len(action_groups['passthrough'])
+            if files_to_process > 0:
+                self.log(f"\n{files_to_process} files will receive Z-reconstruction + mipmap regeneration.")
+            if len(action_groups['passthrough']) > 0:
+                self.log(f"{len(action_groups['passthrough'])} files will be copied as-is (compressed passthrough enabled).")
 
             # Projection
             savings = total_current_size - total_projected_size
@@ -1103,12 +1247,14 @@ class NormalMapProcessorGUI:
             self.log(f"Projected total size: {format_size(total_projected_size)}")
             self.log(f"Estimated savings: {format_size(savings)} ({savings_percent:.1f}%)")
 
-            # Info messages (auto-fixes, optimizations, preservations)
-            if all_info_messages:
-                self.log("\n=== ℹ AUTOMATIC ADJUSTMENTS ===")
-                self.log("The following optimizations will be applied automatically.")
-                self.log("You can disable these in Settings > Smart Format Handling (not recommended).\n")
+            # Combine info and warnings into single issues section
+            has_issues = all_info_messages or oversized_textures or undersized_textures or all_warnings
 
+            if has_issues:
+                self.log("\n=== Issues & Auto-Fixes ===")
+
+            # Show automatic optimizations first (these are good things)
+            if all_info_messages:
                 info_groups = {}
                 for path, info in all_info_messages:
                     if info not in info_groups:
@@ -1116,19 +1262,22 @@ class NormalMapProcessorGUI:
                     info_groups[info].append(path)
 
                 for info, paths in info_groups.items():
-                    self.log(f"\nℹ {info}:")
-                    self.log(f"  {len(paths)} file(s)")
+                    self.log(f"\nℹ Auto-fix: {info}")
+                    self.log(f"   Affects {len(paths)} file(s)")
                     if len(paths) <= 3:
                         for path in paths:
-                            self.log(f"    • {path}")
+                            self.log(f"     • {path}")
                     else:
                         for path in paths[:3]:
-                            self.log(f"    • {path}")
-                        self.log(f"    ... and {len(paths) - 3} more files")
+                            self.log(f"     • {path}")
+                        self.log(f"     ... and {len(paths) - 3} more")
 
-            # Warnings
+                self.log("\n   (Disable in Settings > Smart Format Handling if needed)")
+
+            # Show warnings (things user might want to address)
             if oversized_textures or undersized_textures or all_warnings:
-                self.log("\n=== ⚠ WARNINGS ===")
+                if all_info_messages:
+                    self.log("")  # Blank line separator
 
             # Display conversion/format warnings
             if all_warnings:
@@ -1147,41 +1296,56 @@ class NormalMapProcessorGUI:
                         self.log(f"    ... and {len(paths) - 3} more files")
 
             if oversized_textures:
-                self.log(f"\n⚠ Found {len(oversized_textures)} texture(s) larger than 2048 on any side:")
-                for path, w, h in oversized_textures[:5]:
-                    self.log(f"  • {path} ({w}x{h})")
-                if len(oversized_textures) > 5:
-                    self.log(f"  ... and {len(oversized_textures) - 5} more")
-                self.log("\nRECOMMENDATION: Use the 'Max Resolution' setting to limit texture size to 2048,")
-                self.log("unless these are texture atlases (which should be kept at their original size).")
+                if len(oversized_will_fix) == len(oversized_textures):
+                    # All will be fixed
+                    self.log(f"\nℹ Auto-fix: {len(oversized_textures)} texture(s) larger than 2048px will be downscaled")
+                    for path, w, h in oversized_textures[:3]:
+                        self.log(f"     • {path} ({w}x{h})")
+                    if len(oversized_textures) > 3:
+                        self.log(f"     ... and {len(oversized_textures) - 3} more")
+                elif len(oversized_will_fix) > 0:
+                    # Some will be fixed
+                    unfixed = len(oversized_textures) - len(oversized_will_fix)
+                    self.log(f"\nℹ Auto-fix: {len(oversized_will_fix)} of {len(oversized_textures)} oversized textures will be downscaled")
+                    self.log(f"⚠  {unfixed} will remain larger than 2048px - adjust 'Max Resolution' if needed")
+                else:
+                    # None will be fixed
+                    self.log(f"\n⚠ Resolution: {len(oversized_textures)} texture(s) larger than 2048px")
+                    for path, w, h in oversized_textures[:5]:
+                        self.log(f"     • {path} ({w}x{h})")
+                    if len(oversized_textures) > 5:
+                        self.log(f"     ... and {len(oversized_textures) - 5} more")
+                    self.log("   → Enable 'Max Resolution: 2048' to auto-downscale (except texture atlases)")
 
             if undersized_textures:
-                self.log(f"\n⚠ Found {len(undersized_textures)} texture(s) smaller than 256 on any side:")
-                for path, w, h in undersized_textures[:5]:
-                    self.log(f"  • {path} ({w}x{h})")
-                if len(undersized_textures) > 5:
-                    self.log(f"  ... and {len(undersized_textures) - 5} more")
-                self.log("\nRECOMMENDATION: Set 'Min Resolution' to 256 if you plan to resize.")
-                self.log("It is NOT recommended to resize textures smaller than 256x256.")
+                if len(undersized_will_fix) > 0:
+                    # Some will be upscaled (unusual but possible)
+                    self.log(f"\nℹ Auto-fix: {len(undersized_will_fix)} of {len(undersized_textures)} undersized textures will be upscaled")
+                    unfixed = len(undersized_textures) - len(undersized_will_fix)
+                    if unfixed > 0:
+                        self.log(f"⚠  {unfixed} will remain smaller than 256px")
+                else:
+                    # Show as warning only if user is downscaling
+                    settings = self.get_settings()
+                    if settings.scale_factor < 1.0:
+                        self.log(f"\n⚠ Resolution: {len(undersized_textures)} texture(s) smaller than 256px")
+                        for path, w, h in undersized_textures[:5]:
+                            self.log(f"     • {path} ({w}x{h})")
+                        if len(undersized_textures) > 5:
+                            self.log(f"     ... and {len(undersized_textures) - 5} more")
+                        self.log("   → Set 'Min Resolution: 256' to prevent over-compression when downscaling")
 
             self.stats_label.config(
                 text=f"Current: {format_size(total_current_size)} → Projected: {format_size(total_projected_size)} ({savings_percent:.1f}% savings)"
             )
 
             elapsed_time = time.time() - start_time
-            self.log("\n=== Dry Run Complete ===")
-            self.log(f"Found {nh_count} _nh.dds file(s)")
-            self.log(f"Found {n_count} _n.dds file(s)")
-            self.log(f"Total: {len(results)} normal map file(s)")
-            self.log(f"Time taken: {format_time(elapsed_time)}")
-            if len(results) > 0:
-                avg_time = elapsed_time / len(results)
-                self.log(f"Average per file: {format_time(avg_time)}")
+            self.log(f"\n=== Analysis Complete ({format_time(elapsed_time)}) ===")
 
             # Show parser statistics (only if there were fallbacks)
             fast_hits, texdiag_fallbacks = get_parser_stats()
             if texdiag_fallbacks > 0:
-                self.log(f"\nNote: {texdiag_fallbacks} file(s) used texdiag fallback (fast parser failed)")
+                self.log(f"Note: {texdiag_fallbacks} file(s) used texdiag fallback")
 
             messagebox.showinfo("Dry Run Complete",
                 f"Current: {format_size(total_current_size)}\n"
@@ -1191,7 +1355,12 @@ class NormalMapProcessorGUI:
         except Exception as e:
             self.log(f"\nError: {str(e)}")
             messagebox.showerror("Error", f"Dry run failed: {str(e)}")
-        finally:
+            # Don't enable process button on error
+            self.processing = False
+            self.analyze_btn.configure(state="normal")
+            self.export_btn.configure(state="normal")
+        else:
+            # Only enable process button on successful analysis
             self.processing = False
             self.analyze_btn.configure(state="normal")
             self.process_btn.configure(state="normal")
@@ -1201,13 +1370,17 @@ class NormalMapProcessorGUI:
         """Run processing using core processor"""
         start_time = time.time()
         try:
-            settings = self.get_settings()
-            processor = NormalMapProcessor(settings)
+            # Check if analysis has been run
+            if not self.processor:
+                messagebox.showerror("Error",
+                    "You must run 'Dry Run (Analysis)' before processing.\n\n"
+                    "This ensures optimal performance by caching file metadata.")
+                return
 
             input_dir = Path(self.input_dir.get())
             output_dir = Path(self.output_dir.get())
 
-            n_files, nh_files = processor.find_normal_maps(input_dir)
+            n_files, nh_files = self.processor.find_normal_maps(input_dir)
             total_files = len(n_files) + len(nh_files)
 
             self.log(f"Found {len(nh_files)} _nh.dds file(s)")
@@ -1277,12 +1450,13 @@ class NormalMapProcessorGUI:
                     last_update_count = current
 
             # Process files
-            if settings.enable_parallel and total_files > 1:
-                self.log(f"Using parallel processing: {settings.max_workers} workers, {settings.chunk_size_mb}MB chunks\n")
+            if self.processor.settings.enable_parallel and total_files > 1:
+                self.log(f"Using parallel processing: {self.processor.settings.max_workers} workers, {self.processor.settings.chunk_size_mb}MB chunks\n")
             else:
                 self.log("Using sequential processing\n")
 
-            processor.process_files(input_dir, output_dir, progress_callback)
+            # This will use cached analysis data automatically
+            self.processor.process_files(input_dir, output_dir, progress_callback)
 
             self.progress_label.config(text="Processing complete!")
 

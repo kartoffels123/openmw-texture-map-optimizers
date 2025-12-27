@@ -8,10 +8,10 @@ A high-performance tool for optimizing, fixing, and compressing normal maps for 
    - Make sure to check "Add Python to PATH" during installation
 2. **Double-click** `OpenMW Normal Map Optimizer.bat` to launch
 3. **Configure** input/output directories in the Settings tab
-4. **Run a Dry Run** to preview changes before processing
+4. **Run a Dry Run** to preview changes (takes only seconds, even for 10,000+ files)
 5. **Process Files** when you're ready
 
-**⚠ ALWAYS DO A DRY RUN FIRST** to see what will happen to your files.
+**⚠ DRY RUN IS NOW MANDATORY** - The "Process Files" button is disabled until you run a dry run. This ensures you see what will happen and provides instant processing through analysis caching.
 
 ## About
 
@@ -19,13 +19,14 @@ If any of the technical details below don't make sense to you and you just want 
 
 ## Features
 
-### Version 0.7 (Current)
-- **~100x faster dry run analysis** - Analyze 6,000 files in <1 second (vs 1 minute previously)
-- **Direct DDS header parsing** - No subprocess overhead for blazing fast analysis
-- **Optimized file discovery** - Scans only normal map files (_n.dds, _nh.dds) in large directories
-- **Grouped conversion summary** - Clear breakdown of format and resolution changes
-- **Extended format support** - BC4, BC6H, BC7, and many additional DDS formats
-- **Reorganized codebase** - Cleaner structure for easier maintenance
+### Version 0.8 (Current)
+- **Analysis caching** - Headers read once during dry run, reused during processing for instant start
+- **Mandatory dry run** - Process Files button disabled until dry run completes (don't worry, takes only seconds!)
+- **Auto-cache invalidation** - Settings changes automatically invalidate cache and prompt re-analysis
+- **Texture atlas protection** - Auto-detects and preserves atlases (filename contains "atlas" or in ATL directory)
+- **Smart resolution warnings** - Shows whether current settings will auto-fix oversized/undersized textures
+- **Cleaner output** - Consolidated sections, better terminology ("Recalculate" vs "Convert")
+- **Performance optimizations** - Stores only 5 file examples instead of full lists (fast on 10k+ files)
 
 ### Core Features
 - **Batch processing** of normal maps (`_N.dds` and `_NH.dds`)
@@ -86,7 +87,7 @@ The application has four tabs:
 - **Reconstructs Z channels** (sometimes missing or incorrect)
 
 ### Note on Recompression
-Usually pretty harmless! "Double compression" produces nearly identical results (e.g., PSNR ~64 dB, MSE ~0.03) as long as no intermediate operation (e.g., resizing, color changes) is occurring.
+Usually pretty harmless! "Double compression" produces nearly identical results (e.g., PSNR ~50 dB, MSE ~0.05) as long as no intermediate operation (e.g., resizing, color changes) is occurring.
 
 **Want to avoid reprocessing entirely?** Enable "Allow well-compressed textures to passthrough" in Settings > Smart Format Handling.
 
@@ -150,7 +151,19 @@ openmw-normal-map-optimizer/
 
 ## Version History
 
-### Version 0.7 (Current)
+### Version 0.8 (Current)
+- Analysis caching - headers read once, reused during processing
+- Mandatory dry run - Process Files disabled until dry run completes (takes only seconds!)
+- Auto-cache invalidation when settings change
+- Texture atlas protection - auto-detects 'atlas' filenames or ATL directories
+- Smart resolution warnings show whether current settings will auto-fix
+- Cleaner output - consolidated sections, less redundancy
+- Better terminology - 'Recalculate' vs 'Convert' for clarity
+- Format comparison fixed (BC1_UNORM → BC1/DXT1 normalization)
+- Performance - stores only 5 file examples instead of full lists
+- Removed misleading 'preserved format' messages
+
+### Version 0.7
 - ~100x faster dry run analysis (6,000 files in <1 second vs 1 minute)
 - Direct DDS header parsing eliminates subprocess overhead
 - Optimized file discovery for large directories
@@ -181,7 +194,7 @@ openmw-normal-map-optimizer/
 There are two distinct options that control how already-compressed textures are handled:
 
 #### "Preserve compressed format when not downsampling" (Enabled by default)
-- **What it does:** Keeps the same format (e.g., BC1 → BC1) when NOT resizing. There's no point converting BC1 to BC5 when not downsampling - they're the same file size but BC1→BC5 conversion would introduce artifacts.
+- **What it does:** Keeps the same format (e.g., BC1 → BC1) when NOT resizing. Converting BC1 to BC5 without resizing would double the file size while still retaining BC1's original compression artifacts - no quality gain, just wasted space.
 - **Files are still reprocessed** to fix potential issues:
   - Z-channel reconstruction (if missing or incorrect)
   - Mipmap chain regeneration (if broken or missing)
@@ -208,7 +221,7 @@ There are two distinct options that control how already-compressed textures are 
 **Final Word:** You can override and mix any of these settings. Check the **Dry Run** tab to see exactly what will happen before processing!
 
 ### Double Compression
-Block compression (BC5/BC3/BC1) is deterministic - recompressing the same format (e.g., BC3 → BC3) produces nearly identical results with minimal quality loss (PSNR >60 dB, MSE <0.1). The tool reprocesses files to ensure proper mipmaps and Z-channel reconstruction, which means compressed inputs get recompressed to the same format. This is generally harmless for quality but doesn't reduce file size.
+Block compression (BC5/BC3/BC1) is deterministic - recompressing the same format (e.g., BC3 → BC3) produces nearly identical results with minimal quality loss (e.g., PSNR ~50 dB, MSE ~0.05). The tool reprocesses files to ensure proper mipmaps and Z-channel reconstruction, which means compressed inputs get recompressed to the same format. This is generally harmless for quality but doesn't reduce file size. You **CAN** turn off reprocessing with passthrough.
 
 ### Performance Optimizations (v0.7)
 - **Fast header parsing:** Reads only the first 148 bytes of DDS files instead of spawning subprocesses
