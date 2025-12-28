@@ -55,7 +55,7 @@ class RegularTextureProcessorGUI:
         # UI Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar()
-        self.resize_method = tk.StringVar(value="CUBIC (Recommended)")
+        self.resize_method = tk.StringVar(value="CATMULL-ROM (Recommended - sharp details)")
         self.scale_factor = tk.DoubleVar(value=1.0)
         self.max_resolution = tk.IntVar(value=2048)
         self.min_resolution = tk.IntVar(value=256)
@@ -250,10 +250,11 @@ class RegularTextureProcessorGUI:
         ttk.Label(frame_resize, text="Downscale Method:").grid(row=2, column=0, sticky="w", pady=5)
         ttk.Combobox(frame_resize, textvariable=self.resize_method,
                     values=[
-                        "CUBIC (Recommended - smooth surfaces + detail)",
-                        "FANT (Detail preservation - similar to Lanczos)",
-                        "BOX (Blurry, good for gradients)",
-                        "LINEAR (Fast, general purpose)"
+                        "CATMULL-ROM (Recommended - sharp details)",
+                        "CUBIC (Smooth surfaces + detail)",
+                        "B-SPLINE (Very smooth, slight blur)",
+                        "LINEAR (Fast, general purpose)",
+                        "BOX (Blurry, good for gradients)"
                     ], state="readonly", width=45).grid(row=2, column=1, sticky="w", padx=10)
 
         ttk.Label(frame_resize, text="Downscale Factor:").grid(row=3, column=0, sticky="w", pady=5)
@@ -947,7 +948,7 @@ class RegularTextureProcessorGUI:
                 self.log(f"Files to pass through: {len(action_groups['passthrough'])} (copied as-is)")
 
             files_to_process = total_modify + len(action_groups['no_change'])
-            self.log(f"\n{files_to_process} files will be processed with texconv.")
+            self.log(f"\n{files_to_process} files will be processed (cuttlefish for BC/BGRA, texconv for BGR).")
             self.log(f"{len(action_groups['passthrough'])} files will be copied as-is (well-compressed passthrough).")
 
             # Projection
@@ -1081,7 +1082,8 @@ class RegularTextureProcessorGUI:
                     self.total_output_size += result.output_size
                 else:
                     self.failed_count += 1
-                    self.log(f"Failed: {result.relative_path}")
+                    error_info = f": {result.error_msg}" if result.error_msg else ""
+                    self.log(f"Failed: {result.relative_path}{error_info}")
                 self.root.update_idletasks()
 
             self.processor.process_files(input_dir, output_dir, progress_cb)

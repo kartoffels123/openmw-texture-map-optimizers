@@ -21,6 +21,7 @@ else:
 
 TEXDIAG_EXE = str(SCRIPT_DIR / "tools" / "texdiag.exe")
 TEXCONV_EXE = str(SCRIPT_DIR / "tools" / "texconv.exe")
+CUTTLEFISH_EXE = str(SCRIPT_DIR / "tools" / "cuttlefish.exe")
 
 # Add core package to path
 core_path = Path(__file__).parent.parent.parent.parent / "openmw-texture-optimizer-core" / "src"
@@ -83,12 +84,34 @@ class AnalysisResult:
 
 
 # Format mapping for regular textures (no BC5)
+# texconv format mapping (legacy, kept for reference)
 REGULAR_FORMAT_MAP = {
     "BC1/DXT1": "BC1_UNORM",
     "BC2/DXT3": "BC2_UNORM",
     "BC3/DXT5": "BC3_UNORM",
     "BGRA": "B8G8R8A8_UNORM",
     "BGR": "B8G8R8X8_UNORM"
+}
+
+# Cuttlefish format mapping
+# BC1_RGB = opaque (no alpha), BC1_RGBA = 1-bit alpha
+# Note: BGR uses texconv fallback since cuttlefish can't write 24-bit DDS
+CUTTLEFISH_FORMAT_MAP = {
+    "BC1/DXT1": "BC1_RGB",      # Use BC1_RGB for opaque textures
+    "BC1/DXT1a": "BC1_RGBA",    # Use BC1_RGBA for 1-bit alpha (punchthrough)
+    "BC2/DXT3": "BC2",          # 4-bit alpha
+    "BC3/DXT5": "BC3",          # Interpolated alpha
+    "BGRA": "B8G8R8A8",         # Uncompressed with alpha
+}
+
+# Cuttlefish filter mapping (for resize operations)
+# Cuttlefish supports: box, linear, cubic, b-spline, catmull-rom (default)
+CUTTLEFISH_FILTER_MAP = {
+    "BOX": "box",
+    "LINEAR": "linear",
+    "CUBIC": "cubic",
+    "B-SPLINE": "b-spline",
+    "CATMULL-ROM": "catmull-rom",
 }
 
 # Formats that support alpha
@@ -248,9 +271,63 @@ def _calculate_new_dimensions(orig_width: int, orig_height: int, settings: dict,
     return new_width, new_height
 
 
-def _process_texture_static(input_path: Path, output_path: Path, settings: dict) -> bool:
+def _process_texture_with_texconv(input_path: Path, output_path: Path, target_format: str,
+                                   new_width: int, new_height: int, will_resize: bool,
+                                   skip_mipmaps: bool, settings: dict) -> Tuple[bool, Optional[str]]:
     """
-    Process a single texture file using texconv.
+    Process texture using texconv (legacy tool).
+    Used for BGR (24-bit) textures since cuttlefish can't write 24-bit DDS.
+    """
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # texconv format
+        texconv_format = REGULAR_FORMAT_MAP.get(target_format, "B8G8R8X8_UNORM")
+
+        cmd = [
+            TEXCONV_EXE,
+            "-nologo",
+            "-y",  # Overwrite
+            "-f", texconv_format,
+            "-o", str(output_path.parent),
+        ]
+
+        # Resize if needed
+        if will_resize:
+            cmd.extend(["-w", str(new_width), "-h", str(new_height)])
+
+        # Mipmaps
+        if skip_mipmaps:
+            cmd.extend(["-m", "1"])
+
+        cmd.append(str(input_path))
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+
+        if result.returncode != 0:
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            return False, f"texconv failed (exit {result.returncode}): {error_msg.strip()}"
+
+        # texconv outputs to directory with original filename, need to rename if different
+        texconv_output = output_path.parent / input_path.with_suffix('.dds').name
+        if texconv_output != output_path and texconv_output.exists():
+            shutil.move(texconv_output, output_path)
+
+        if not output_path.exists():
+            return False, f"Output file not created: {output_path}"
+
+        return True, None
+
+    except Exception as e:
+        return False, f"Exception: {str(e)}"
+
+
+def _process_texture_static(input_path: Path, output_path: Path, settings: dict) -> Tuple[bool, Optional[str]]:
+    """
+    Process a single texture file.
+
+    Uses cuttlefish for BC compression (better PSNR, 2-5 dB higher than texconv).
+    Falls back to texconv for BGR (24-bit) small textures since cuttlefish can't write 24-bit DDS.
 
     Decision Priority Order (matches _analyze_file_worker):
     1. Compressed (BC1/BC2/BC3): passthrough if valid, else reprocess keeping format
@@ -263,7 +340,7 @@ def _process_texture_static(input_path: Path, output_path: Path, settings: dict)
         if input_path.suffix.lower() == '.tga':
             dimensions, format_name, mipmap_count = parse_tga_header_extended(input_path)
             if not dimensions:
-                return False
+                return False, "Could not parse TGA header"
             has_alpha = (format_name == 'TGA_RGBA')
 
             # Optional: Check if TGA alpha is actually used
@@ -276,7 +353,7 @@ def _process_texture_static(input_path: Path, output_path: Path, settings: dict)
         else:
             dimensions, format_name, mipmap_count = parse_dds_header_extended(input_path)
             if not dimensions:
-                return False
+                return False, "Could not parse DDS header"
             format_name = _normalize_format(format_name)
             has_alpha = _has_alpha_channel(format_name)
 
@@ -301,7 +378,7 @@ def _process_texture_static(input_path: Path, output_path: Path, settings: dict)
                 # Passthrough: copy as-is if enabled
                 if settings.get('copy_passthrough_files', True):
                     shutil.copy2(input_path, output_path)
-                return True
+                return True, None
             else:
                 # Reprocess but keep same format
                 target_format = format_name
@@ -319,64 +396,56 @@ def _process_texture_static(input_path: Path, output_path: Path, settings: dict)
                 # Normal size: compress based on alpha
                 target_format = 'BC3/DXT5' if has_alpha else 'BC1/DXT1'
 
-        texconv_format = REGULAR_FORMAT_MAP.get(target_format, "BC1_UNORM")
-
         # Check if mipmaps should be skipped for this file
         skip_mipmaps = _should_skip_mipmaps(input_path, settings)
 
-        # Build texconv command
+        # === Use texconv for BGR (24-bit) - cuttlefish can't write 24-bit DDS ===
+        if target_format == "BGR":
+            return _process_texture_with_texconv(
+                input_path, output_path, target_format,
+                new_width, new_height, will_resize, skip_mipmaps, settings
+            )
+
+        # === Use cuttlefish for everything else (better PSNR) ===
+        cuttlefish_format = CUTTLEFISH_FORMAT_MAP.get(target_format, "BC1_RGB")
+
+        # Build cuttlefish command
         cmd = [
-            TEXCONV_EXE,
-            "-f", texconv_format,
-            "-m", "1" if skip_mipmaps else "0",  # 1 = no mipmaps, 0 = full chain
-            "-dx9"
+            CUTTLEFISH_EXE,
+            "-i", str(input_path),
+            "-o", str(output_path),
+            "-f", cuttlefish_format,
+            "-Q", "highest",  # Use highest quality for best PSNR
+            "--create-dir",   # Create output directory if needed
         ]
 
-        # Alpha handling
-        if has_alpha:
-            cmd.append("-alpha")
+        # Resize handling
+        resize_method = str(settings.get('resize_method', 'CATMULL-ROM')).split()[0].upper()
+        cuttlefish_filter = CUTTLEFISH_FILTER_MAP.get(resize_method, "catmull-rom")
+        enforce_po2 = settings.get('enforce_power_of_2', True)
 
-        # Compression options
-        if target_format in ["BC1/DXT1", "BC2/DXT3", "BC3/DXT5"]:
-            bc_options = ""
-            if settings.get('uniform_weighting', False):
-                bc_options += "u"
-            if settings.get('use_dithering', False):
-                bc_options += "d"
-            if bc_options:
-                cmd.extend(["-bc", bc_options])
+        if will_resize:
+            cmd.extend(["-r", str(new_width), str(new_height), cuttlefish_filter])
+        elif enforce_po2:
+            cmd.extend(["-r", "nearestpo2", "nearestpo2"])
 
-        # Resize if needed
-        if new_width != orig_width or new_height != orig_height:
-            cmd.extend(["-w", str(new_width), "-h", str(new_height)])
-
-            resize_method = str(settings.get('resize_method', 'CUBIC')).split()[0]
-            if resize_method in FILTER_MAP:
-                cmd.extend(["-if", FILTER_MAP[resize_method]])
-
-        # Power-of-2 enforcement
-        if settings.get('enforce_power_of_2', True):
-            cmd.append("-pow2")
-
-        cmd.extend(["-o", str(output_path.parent), "-y", str(input_path)])
+        # Mipmap generation
+        if not skip_mipmaps:
+            cmd.append("-m")
 
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
         if result.returncode != 0:
-            return False
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            return False, f"cuttlefish failed (exit {result.returncode}): {error_msg.strip()}\nCommand: {' '.join(cmd)}"
 
-        # Rename output file if needed (texconv outputs with original filename)
-        generated_file = output_path.parent / (input_path.stem + ".dds")
-        if generated_file != output_path:
-            if output_path.exists():
-                output_path.unlink()
-            if generated_file.exists():
-                generated_file.rename(output_path)
+        if not output_path.exists():
+            return False, f"Output file not created: {output_path}"
 
-        return output_path.exists()
+        return True, None
 
-    except Exception:
-        return False
+    except Exception as e:
+        return False, f"Exception: {str(e)}"
 
 
 def _process_file_worker(args):
@@ -408,7 +477,7 @@ def _process_file_worker(args):
             result.orig_dims = dims
             result.orig_format = fmt
 
-        success = _process_texture_static(input_file, output_file, settings)
+        success, error_detail = _process_texture_static(input_file, output_file, settings)
 
         if success and output_file.exists():
             result.success = True
@@ -417,7 +486,7 @@ def _process_file_worker(args):
             result.new_dims = new_dims
             result.new_format = new_fmt
         else:
-            result.error_msg = "Processing failed or output missing"
+            result.error_msg = error_detail or "Processing failed or output missing"
 
     except Exception as e:
         result.error_msg = str(e)
