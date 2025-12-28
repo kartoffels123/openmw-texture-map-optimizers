@@ -536,13 +536,13 @@ class RegularTextureProcessorGUI:
                 for f in sorted(blacklist_files):
                     lines.append(f"  {f}")
 
-        # Mipmap regeneration section
-        if self.last_action_groups and self.last_action_groups.get('missing_mipmaps'):
+        # Mipmap regeneration section (no_change = same format/size, just mipmap regen)
+        if self.last_action_groups and self.last_action_groups.get('no_change'):
             lines.append("\n" + "=" * 60)
-            lines.append("MIPMAP REGENERATION")
+            lines.append("MIPMAP REGENERATION (same format/size)")
             lines.append("=" * 60 + "\n")
 
-            mipmap_files = self.last_action_groups['missing_mipmaps']
+            mipmap_files = self.last_action_groups['no_change']
             # Group by format
             by_format = {}
             for r in mipmap_files:
@@ -1073,18 +1073,47 @@ class RegularTextureProcessorGUI:
             self.progress_bar["maximum"] = len(all_files)
             self.progress_bar["value"] = 0
 
+            last_ui_update = time.time()
+            pending_logs = []
+
             def progress_cb(current, total, result):
-                self.progress_bar["value"] = current
-                self.progress_label.config(text=f"Processing {current}/{total}")
+                nonlocal last_ui_update, pending_logs
+
+                # Track stats
+                self.total_input_size += result.input_size
+
                 if result.success:
                     self.processed_count += 1
-                    self.total_input_size += result.input_size
                     self.total_output_size += result.output_size
+
+                    if result.orig_dims and result.new_dims:
+                        orig_w, orig_h = result.orig_dims
+                        new_w, new_h = result.new_dims
+                        size_change = result.output_size - result.input_size
+                        size_change_str = f"+{format_size(size_change)}" if size_change > 0 else format_size(size_change)
+
+                        pending_logs.append(f"✓ {result.relative_path}")
+                        pending_logs.append(f"  {orig_w}x{orig_h} {result.orig_format} → {new_w}x{new_h} {result.new_format} | "
+                                f"{format_size(result.input_size)} → {format_size(result.output_size)} ({size_change_str})")
+                    else:
+                        pending_logs.append(f"✓ {result.relative_path}")
                 else:
                     self.failed_count += 1
-                    error_info = f": {result.error_msg}" if result.error_msg else ""
-                    self.log(f"Failed: {result.relative_path}{error_info}")
-                self.root.update_idletasks()
+                    error_msg = result.error_msg or 'Unknown error'
+                    pending_logs.append(f"✗ Failed: {result.relative_path} - {error_msg}")
+
+                # Only update UI every 2 seconds (or on last file)
+                now = time.time()
+                if now - last_ui_update >= 2.0 or current == total:
+                    # Flush pending logs
+                    if pending_logs:
+                        self.log('\n'.join(pending_logs))
+                        pending_logs.clear()
+
+                    self.progress_bar["value"] = current
+                    self.progress_label.config(text=f"Processing {current}/{total}")
+                    self.root.update_idletasks()
+                    last_ui_update = now
 
             self.processor.process_files(input_dir, output_dir, progress_cb)
 
