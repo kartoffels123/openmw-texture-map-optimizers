@@ -33,10 +33,11 @@ class FileScanner:
         path_str = str(path).lower()
         path_parts = [p.lower() for p in path.parts]
 
-        # Check whitelist (must contain ALL whitelisted components)
+        # Check whitelist (must contain ALL whitelisted components as exact directory names)
         for required in self.path_whitelist:
-            # Check if any part of the path contains the required string
-            if not any(required in part for part in path_parts):
+            # Check if any directory in the path exactly matches the required name (case-insensitive)
+            # e.g., "Textures" matches "somepath/Textures/blah" but NOT "somepath/Meshes and Textures/blah"
+            if not any(required == part for part in path_parts):
                 return False
 
         # Check blacklist (must not contain ANY blacklisted components)

@@ -3,7 +3,7 @@ supporting-docs/*
 test-in/*
 test-out/*
 .claude
-
+*.dds
 # User-specific settings and reports
 openmw-normal-map-optimizer/optimizer_settings*.json
 openmw-normal-map-optimizer/verification_report*.txt

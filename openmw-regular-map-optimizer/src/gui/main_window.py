@@ -55,7 +55,7 @@ class RegularTextureProcessorGUI:
         # UI Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar()
-        self.resize_method = tk.StringVar(value="CATMULL-ROM (Recommended - sharp details)")
+        self.resize_method = tk.StringVar(value="FANT (Recommended - sharp details)")
         self.scale_factor = tk.DoubleVar(value=1.0)
         self.max_resolution = tk.IntVar(value=2048)
         self.min_resolution = tk.IntVar(value=256)
@@ -226,7 +226,7 @@ class RegularTextureProcessorGUI:
                  text="Format is automatically selected based on alpha channel:\n"
                       "• No alpha → BC1/DXT1 (4 bpp, best compression)\n"
                       "• Has alpha → BC3/DXT5 (8 bpp, preserves transparency)\n"
-                      "• Small textures → BGR/BGRA uncompressed (see threshold below)",
+                      "• Small textures → BGR/BGRA uncompressed (see threshold under advanced)",
                  font=("", 8), justify="left").pack(anchor="w")
 
         # Resize
@@ -250,9 +250,8 @@ class RegularTextureProcessorGUI:
         ttk.Label(frame_resize, text="Downscale Method:").grid(row=2, column=0, sticky="w", pady=5)
         ttk.Combobox(frame_resize, textvariable=self.resize_method,
                     values=[
-                        "CATMULL-ROM (Recommended - sharp details)",
+                        "FANT (Recommended - sharp details)",
                         "CUBIC (Smooth surfaces + detail)",
-                        "B-SPLINE (Very smooth, slight blur)",
                         "LINEAR (Fast, general purpose)",
                         "BOX (Blurry, good for gradients)"
                     ], state="readonly", width=45).grid(row=2, column=1, sticky="w", padx=10)
@@ -274,6 +273,25 @@ class RegularTextureProcessorGUI:
                     values=[0, 128, 256, 512, 1024, 2048, 4096, 8192], state="readonly", width=20).grid(row=5, column=1, sticky="w", padx=10)
         ttk.Label(frame_resize, text="(0 = disabled)",
                  font=("", 8, "italic")).grid(row=5, column=2, sticky="w")
+
+        # Alpha Optimization
+        frame_alpha = ttk.LabelFrame(scrollable, text="Alpha Optimization", padding=10)
+        frame_alpha.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_alpha,
+                 text="Analyzes alpha channels to detect 'fake' alpha (all opaque pixels).\n"
+                      "Textures with unused alpha can be compressed to BC1 instead of BC3, saving space.\n"
+                      "This adds analysis time but can significantly reduce file sizes.",
+                 font=("", 8), wraplength=600, justify="left").pack(anchor="w", pady=(0, 5))
+
+        ttk.Checkbutton(frame_alpha, text="Optimize away unused alpha channels",
+                       variable=self.optimize_unused_alpha).pack(anchor="w")
+        ttk.Label(frame_alpha, text="Scans TGA_RGBA, BGRA, BC2, BC3 files for all-opaque alpha (all pixels = 255)",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        ttk.Label(frame_alpha,
+                 text="Note: Adds significant analysis time for large datasets",
+                 font=("", 8), foreground="orange").pack(anchor="w", pady=(5, 0))
 
     def _create_advanced_settings(self, parent):
         """Create advanced settings tab"""
@@ -366,25 +384,6 @@ class RegularTextureProcessorGUI:
         ttk.Label(frame_tga, text="Process .tga files in addition to .dds files",
                  font=("", 8)).pack(anchor="w", padx=(20, 0))
 
-        # Alpha Optimization (Optional)
-        frame_alpha = ttk.LabelFrame(scrollable, text="Alpha Optimization (Optional)", padding=10)
-        frame_alpha.pack(fill="x", padx=10, pady=5)
-
-        ttk.Label(frame_alpha,
-                 text="Analyzes alpha channels to detect 'fake' alpha (all opaque pixels).\n"
-                      "Textures with unused alpha can be compressed to BC1 instead of BC3, saving space.\n"
-                      "This adds analysis time but can significantly reduce file sizes.",
-                 font=("", 8), wraplength=600, justify="left").pack(anchor="w", pady=(0, 5))
-
-        ttk.Checkbutton(frame_alpha, text="Optimize away unused alpha channels",
-                       variable=self.optimize_unused_alpha).pack(anchor="w")
-        ttk.Label(frame_alpha, text="Scans TGA_RGBA, BGRA, BC2, BC3 files for all-opaque alpha (all pixels = 255)",
-                 font=("", 8)).pack(anchor="w", padx=(20, 0))
-
-        ttk.Label(frame_alpha,
-                 text="⚠ Depending on how much data you are processing and how good your system is this can take a while.\nOn my machine analyzing 30GB of data becomes 1 minute instead of 1 second with this on",
-                 font=("", 8), foreground="orange").pack(anchor="w", pady=(5, 0))
-
         # Parallel
         frame_parallel = ttk.LabelFrame(scrollable, text="Parallel Processing", padding=10)
         frame_parallel.pack(fill="x", padx=10, pady=5)
@@ -429,7 +428,7 @@ class RegularTextureProcessorGUI:
         # Whitelist
         frame_white = ttk.LabelFrame(scrollable, text="Path Whitelist", padding=10)
         frame_white.pack(fill="x", padx=10, pady=5)
-        ttk.Checkbutton(frame_white, text="Only process paths containing 'Textures'",
+        ttk.Checkbutton(frame_white, text="Only process paths containing a 'Textures' directory",
                        variable=self.use_path_whitelist).pack(anchor="w")
 
         # Blacklist

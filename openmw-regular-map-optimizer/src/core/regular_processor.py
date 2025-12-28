@@ -105,13 +105,13 @@ CUTTLEFISH_FORMAT_MAP = {
 }
 
 # Cuttlefish filter mapping (for resize operations)
-# Cuttlefish supports: box, linear, cubic, b-spline, catmull-rom (default)
+# Cuttlefish supports: box, linear, cubic, catmull-rom
+# We map UI options to cuttlefish equivalents
 CUTTLEFISH_FILTER_MAP = {
     "BOX": "box",
     "LINEAR": "linear",
     "CUBIC": "cubic",
-    "B-SPLINE": "b-spline",
-    "CATMULL-ROM": "catmull-rom",
+    "FANT": "catmull-rom",  # FANT (texconv) maps to catmull-rom (cuttlefish) - both preserve sharp details
 }
 
 # Formats that support alpha
@@ -295,6 +295,10 @@ def _process_texture_with_texconv(input_path: Path, output_path: Path, target_fo
         # Resize if needed
         if will_resize:
             cmd.extend(["-w", str(new_width), "-h", str(new_height)])
+            # Apply resize filter
+            resize_method = str(settings.get('resize_method', 'FANT')).split()[0].upper()
+            if resize_method in FILTER_MAP:
+                cmd.extend(["-if", FILTER_MAP[resize_method]])
 
         # Mipmaps
         if skip_mipmaps:
@@ -420,7 +424,7 @@ def _process_texture_static(input_path: Path, output_path: Path, settings: dict)
         ]
 
         # Resize handling
-        resize_method = str(settings.get('resize_method', 'CATMULL-ROM')).split()[0].upper()
+        resize_method = str(settings.get('resize_method', 'FANT')).split()[0].upper()
         cuttlefish_filter = CUTTLEFISH_FILTER_MAP.get(resize_method, "catmull-rom")
         enforce_po2 = settings.get('enforce_power_of_2', True)
 
