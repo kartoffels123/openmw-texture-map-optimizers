@@ -19,6 +19,10 @@ from src.core import (
     format_size,
     format_time,
 )
+from src.core.regular_settings import (
+    DEFAULT_BLACKLIST,
+    DEFAULT_NO_MIPMAPS,
+)
 
 
 class RegularTextureProcessorGUI:
@@ -41,10 +45,16 @@ class RegularTextureProcessorGUI:
         self.failed_count = 0
         self.processor = None
 
+        # Analysis results storage for detailed export
+        self.last_analysis_results = None
+        self.last_conversion_stats = None
+        self.last_alpha_stats = None
+        self.last_filter_stats = None
+        self.last_action_groups = None
+
         # UI Variables
         self.input_dir = tk.StringVar()
         self.output_dir = tk.StringVar()
-        self.target_format = tk.StringVar(value="BC1/DXT1")
         self.resize_method = tk.StringVar(value="CUBIC (Recommended)")
         self.scale_factor = tk.DoubleVar(value=1.0)
         self.max_resolution = tk.IntVar(value=2048)
@@ -57,23 +67,32 @@ class RegularTextureProcessorGUI:
         self.max_workers = tk.IntVar(value=max(1, cpu_count() - 1))
         self.enforce_power_of_2 = tk.BooleanVar(value=True)
         self.allow_well_compressed_passthrough = tk.BooleanVar(value=True)
+        self.preserve_compressed_format = tk.BooleanVar(value=True)
         self.enable_tga_support = tk.BooleanVar(value=True)
         self.use_path_whitelist = tk.BooleanVar(value=True)
         self.use_path_blacklist = tk.BooleanVar(value=True)
         self.custom_blacklist = tk.StringVar(value="")
+        self.copy_passthrough_files = tk.BooleanVar(value=True)
+        self.use_no_mipmap_paths = tk.BooleanVar(value=True)
+        self.exclude_normal_maps = tk.BooleanVar(value=True)
         self.enable_atlas_downscaling = tk.BooleanVar(value=False)
         self.atlas_max_resolution = tk.IntVar(value=4096)
+        self.optimize_unused_alpha = tk.BooleanVar(value=False)
+        self.alpha_threshold = tk.IntVar(value=255)
+        self.analysis_chunk_size = tk.IntVar(value=100)  # Chunk size for parallel alpha analysis
 
         self.create_widgets()
 
         # Attach change callbacks
-        for var in [self.target_format, self.resize_method, self.scale_factor,
+        for var in [self.resize_method, self.scale_factor,
                     self.max_resolution, self.min_resolution, self.uniform_weighting,
                     self.use_dithering, self.use_small_texture_override,
                     self.small_texture_threshold, self.allow_well_compressed_passthrough,
-                    self.enable_atlas_downscaling, self.atlas_max_resolution,
-                    self.enforce_power_of_2, self.use_path_whitelist, self.use_path_blacklist,
-                    self.custom_blacklist, self.enable_tga_support]:
+                    self.preserve_compressed_format, self.enable_atlas_downscaling,
+                    self.atlas_max_resolution, self.enforce_power_of_2, self.use_path_whitelist,
+                    self.use_path_blacklist, self.custom_blacklist, self.enable_tga_support,
+                    self.copy_passthrough_files, self.use_no_mipmap_paths, self.exclude_normal_maps,
+                    self.optimize_unused_alpha]:
             var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
@@ -113,12 +132,53 @@ class RegularTextureProcessorGUI:
             "KEY FEATURES:\n"
             "- Excludes _N and _NH files (use Normal Map Optimizer for those)\n"
             "- Path filtering: Only 'Textures' folders, skips icon/bookart\n"
-            "- Passthrough for well-compressed textures (BC1/BC2/BC3 with mipmaps)\n"
+            "- Smart passthrough for well-compressed textures\n"
             "- TGA to DDS conversion\n"
             "- Mipmap regeneration for textures missing mipmaps\n\n"
             "RUN DRY RUN FIRST to see what will happen before processing."
         )
         ttk.Label(frame, text=info, justify="left", wraplength=self.WRAPLENGTH).pack(anchor="w")
+
+        # File Categories
+        frame_categories = ttk.LabelFrame(scrollable, text="File Categories", padding=10)
+        frame_categories.pack(fill="x", padx=10, pady=5)
+
+        categories_text = (
+            "Files are handled in three ways:\n\n"
+            "SKIP - Filtered out entirely, never processed, not in output\n"
+            "   • Blacklisted paths (icon, bookart, menu_, etc.)\n"
+            "   • Not in whitelist ('Textures' folder)\n"
+            "   • Normal map suffixes (_n, _nh)\n\n"
+            "PASSTHROUGH - Well-compressed, copied as-is to output\n"
+            "   • BC1/BC2/BC3 with valid mipmaps, no resize needed\n"
+            "   • Can optionally skip copy to save disk space\n\n"
+            "MODIFIED - Needs processing, always outputs\n"
+            "   • Format conversion (TGA→DDS, uncompressed→BC1/BC3)\n"
+            "   • Resizing (scale factor or max resolution)\n"
+            "   • Mipmap regeneration"
+        )
+        ttk.Label(frame_categories, text=categories_text, justify="left", wraplength=self.WRAPLENGTH).pack(anchor="w")
+
+        # Decision Priority Order
+        frame_order = ttk.LabelFrame(scrollable, text="Processing Decision Order", padding=10)
+        frame_order.pack(fill="x", padx=10, pady=5)
+
+        order_text = (
+            "For files that pass filtering (not skipped):\n\n"
+            "1. COMPRESSED TEXTURES (BC1, BC2, BC3):\n"
+            "   • If NOT resizing AND has valid mipmaps:\n"
+            "     → Passthrough (copy as-is or skip)\n"
+            "   • If resizing OR missing mipmaps:\n"
+            "     → Reprocess, keep same format (BC1→BC1, BC2→BC2, BC3→BC3)\n\n"
+            "2. UNCOMPRESSED TEXTURES (TGA, BGR, BGRA):\n"
+            "   • Small textures (below threshold):\n"
+            "     → Keep uncompressed (BGR/BGRA) - compression wastes space on small files\n"
+            "   • Normal size, NO alpha:\n"
+            "     → Compress to BC1\n"
+            "   • Normal size, HAS alpha:\n"
+            "     → Compress to BC3"
+        )
+        ttk.Label(frame_order, text=order_text, justify="left", wraplength=self.WRAPLENGTH).pack(anchor="w")
 
     def _create_settings_tab(self, parent):
         """Create settings tab"""
@@ -127,11 +187,14 @@ class RegularTextureProcessorGUI:
 
         tab_basic = ttk.Frame(notebook)
         tab_filtering = ttk.Frame(notebook)
+        tab_advanced = ttk.Frame(notebook)
         notebook.add(tab_basic, text="Basic")
         notebook.add(tab_filtering, text="Filtering")
+        notebook.add(tab_advanced, text="Advanced")
 
         self._create_basic_settings(tab_basic)
         self._create_filtering_settings(tab_filtering)
+        self._create_advanced_settings(tab_advanced)
 
     def _create_basic_settings(self, parent):
         """Create basic settings"""
@@ -156,54 +219,191 @@ class RegularTextureProcessorGUI:
         ttk.Entry(frame_output, textvariable=self.output_dir, width=50).pack(side="left", padx=5)
         ttk.Button(frame_output, text="Browse...", command=self.browse_output).pack(side="left")
 
-        # Format
-        frame_format = ttk.LabelFrame(scrollable, text="Format Options", padding=10)
+        # Format info (no dropdown - auto-selected based on alpha)
+        frame_format = ttk.LabelFrame(scrollable, text="Format Selection (Automatic)", padding=10)
         frame_format.pack(fill="x", padx=10, pady=5)
-        ttk.Label(frame_format, text="Target format:").grid(row=0, column=0, sticky="w", pady=5)
-        ttk.Combobox(frame_format, textvariable=self.target_format,
-                    values=["BC1/DXT1", "BC2/DXT3", "BC3/DXT5", "BGRA", "BGR"],
-                    state="readonly", width=20).grid(row=0, column=1, padx=10)
-        ttk.Label(frame_format, text="(BC1 for no alpha, BC3 for alpha)",
-                 font=("", 8)).grid(row=0, column=2, sticky="w")
+        ttk.Label(frame_format,
+                 text="Format is automatically selected based on alpha channel:\n"
+                      "• No alpha → BC1/DXT1 (4 bpp, best compression)\n"
+                      "• Has alpha → BC3/DXT5 (8 bpp, preserves transparency)\n"
+                      "• Small textures → BGR/BGRA uncompressed (see threshold below)",
+                 font=("", 8), justify="left").pack(anchor="w")
 
         # Resize
         frame_resize = ttk.LabelFrame(scrollable, text="Downscale Options", padding=10)
         frame_resize.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(frame_resize, text="Downscale Factor:").grid(row=0, column=0, sticky="w", pady=5)
+        # Explanation section (from normal map optimizer)
+        ttk.Label(frame_resize,
+                 text="How Downscaling Works:",
+                 font=("", 9, "bold")).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+        ttk.Label(frame_resize,
+                 text="• Downscale Factor: Applies to ALL textures (e.g., 0.5 = half size, 1.0 = no resize)\n"
+                      "• Max Resolution (Ceiling): Downscales textures LARGER than this - applies EVEN at 1.0 scale factor\n"
+                      "• Min Resolution (Floor): Protects textures SMALLER than this - only applies when scale < 1.0\n\n"
+                      "Example 1 (with downscaling): Factor 0.5, max 2048, min 256\n"
+                      "  -> 4096x4096 becomes 2048x2048 (capped by max), 512x512 becomes 256x256, 256x256 stays (protected by min)\n"
+                      "Example 2 (no downscaling): Factor 1.0, max 2048, min 256\n"
+                      "  -> 4096x4096 becomes 2048x2048 (capped by max), 512x512 stays as-is, min does nothing at 1.0",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 10))
+
+        ttk.Label(frame_resize, text="Downscale Method:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Combobox(frame_resize, textvariable=self.resize_method,
+                    values=[
+                        "CUBIC (Recommended - smooth surfaces + detail)",
+                        "FANT (Detail preservation - similar to Lanczos)",
+                        "BOX (Blurry, good for gradients)",
+                        "LINEAR (Fast, general purpose)"
+                    ], state="readonly", width=45).grid(row=2, column=1, sticky="w", padx=10)
+
+        ttk.Label(frame_resize, text="Downscale Factor:").grid(row=3, column=0, sticky="w", pady=5)
         ttk.Combobox(frame_resize, textvariable=self.scale_factor,
-                    values=[0.125, 0.25, 0.5, 1.0], state="readonly", width=20).grid(row=0, column=1, padx=10)
+                    values=[0.125, 0.25, 0.5, 1.0], state="readonly", width=20).grid(row=3, column=1, sticky="w", padx=10)
+        ttk.Label(frame_resize, text="(1.0 = no downscaling unless max resolution set)",
+                 font=("", 8, "italic")).grid(row=3, column=2, sticky="w")
 
-        ttk.Label(frame_resize, text="Max Resolution:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Label(frame_resize, text="Max Resolution (Ceiling):").grid(row=4, column=0, sticky="w", pady=5)
         ttk.Combobox(frame_resize, textvariable=self.max_resolution,
-                    values=[0, 256, 512, 1024, 2048, 4096], state="readonly", width=20).grid(row=1, column=1, padx=10)
+                    values=[0, 128, 256, 512, 1024, 2048, 4096, 8192], state="readonly", width=20).grid(row=4, column=1, sticky="w", padx=10)
+        ttk.Label(frame_resize, text="(0 = disabled)",
+                 font=("", 8, "italic")).grid(row=4, column=2, sticky="w")
 
-        ttk.Label(frame_resize, text="Min Resolution:").grid(row=2, column=0, sticky="w", pady=5)
+        ttk.Label(frame_resize, text="Min Resolution (Floor):").grid(row=5, column=0, sticky="w", pady=5)
         ttk.Combobox(frame_resize, textvariable=self.min_resolution,
-                    values=[0, 128, 256, 512], state="readonly", width=20).grid(row=2, column=1, padx=10)
+                    values=[0, 128, 256, 512, 1024, 2048, 4096, 8192], state="readonly", width=20).grid(row=5, column=1, sticky="w", padx=10)
+        ttk.Label(frame_resize, text="(0 = disabled)",
+                 font=("", 8, "italic")).grid(row=5, column=2, sticky="w")
 
-        # Passthrough
-        frame_pass = ttk.LabelFrame(scrollable, text="Passthrough", padding=10)
+    def _create_advanced_settings(self, parent):
+        """Create advanced settings tab"""
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
+        scrollable.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # Passthrough / Format Preservation
+        frame_pass = ttk.LabelFrame(scrollable, text="Passthrough & Format Preservation", padding=10)
         frame_pass.pack(fill="x", padx=10, pady=5)
+
         ttk.Checkbutton(frame_pass, text="Allow well-compressed textures to passthrough",
                        variable=self.allow_well_compressed_passthrough).pack(anchor="w")
-        ttk.Label(frame_pass, text="BC1/BC2/BC3 with proper mipmaps are copied as-is",
-                 font=("", 8)).pack(anchor="w")
+        ttk.Label(frame_pass, text="BC1/BC2/BC3 with proper mipmaps skip processing (no changes needed)",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        ttk.Checkbutton(frame_pass, text="Copy passthrough files to output",
+                       variable=self.copy_passthrough_files).pack(anchor="w", pady=(10, 0))
+        ttk.Label(frame_pass, text="When enabled, well-compressed files are copied to output directory.\n"
+                                   "When disabled, they are skipped entirely (saves disk space).",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        ttk.Checkbutton(frame_pass, text="Preserve compressed format (BC1->BC1, BC2->BC2, BC3->BC3)",
+                       variable=self.preserve_compressed_format).pack(anchor="w", pady=(10, 0))
+        ttk.Label(frame_pass, text="When processing compressed textures (not passthrough), keep their original format\n"
+                                   "instead of converting to target format.",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        # Small Texture Override
+        frame_small_tex = ttk.LabelFrame(scrollable, text="Small Texture Override", padding=10)
+        frame_small_tex.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_small_tex, text="Enable small texture override",
+                       variable=self.use_small_texture_override).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_small_tex,
+                 text="Small textures benefit from uncompressed formats. This overrides compression for tiny\n"
+                      "UNCOMPRESSED textures. Already-compressed small textures (BC1/BC2/BC3) are kept\n"
+                      "compressed to avoid wasting disk space by decompressing them.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_small_tex, text="Threshold:").grid(row=2, column=0, sticky="w", pady=5, padx=(20, 0))
+        ttk.Combobox(frame_small_tex, textvariable=self.small_texture_threshold,
+                    values=[0, 64, 128, 256, 512], state="readonly", width=15).grid(row=2, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(frame_small_tex, text="(Textures ≤ this on any side stay uncompressed, 0 = disabled)",
+                 font=("", 8, "italic")).grid(row=2, column=2, sticky="w")
+
+        ttk.Label(frame_small_tex,
+                 text="Uses BGRA for textures with alpha, BGR for textures without alpha.\n"
+                      "⚠ Threshold is checked AFTER resizing. Recommended: 128",
+                 font=("", 8), wraplength=600, justify="left").grid(row=3, column=0, columnspan=3, sticky="w", pady=(5, 2))
+
+        # Texture Atlas Settings
+        frame_atlas = ttk.LabelFrame(scrollable, text="Texture Atlas Settings", padding=10)
+        frame_atlas.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_atlas,
+                 text="Texture atlases are automatically detected and protected from resizing.\n"
+                      "Detection: Filename contains 'atlas' or path contains 'ATL' directory.\n"
+                      "Atlases still receive format conversion and mipmap regeneration.",
+                 font=("", 8), wraplength=600, justify="left").pack(anchor="w", pady=(0, 5))
+
+        ttk.Checkbutton(frame_atlas, text="Enable downscaling for texture atlases (NOT recommended)",
+                       variable=self.enable_atlas_downscaling).pack(anchor="w")
+        ttk.Label(frame_atlas,
+                 text="Atlases are large for a reason - they pack many smaller textures into one file.\n"
+                      "Downscaling reduces detail for all packed textures.",
+                 font=("", 8), wraplength=600, justify="left", foreground="red").pack(anchor="w", padx=(20, 0))
+
+        frame_atlas_max = ttk.Frame(frame_atlas)
+        frame_atlas_max.pack(anchor="w", pady=(5, 0))
+        ttk.Label(frame_atlas_max, text="Max resolution for atlases:").pack(side="left")
+        ttk.Combobox(frame_atlas_max, textvariable=self.atlas_max_resolution,
+                    values=[1024, 2048, 4096, 8192, 16384], state="readonly", width=10).pack(side="left", padx=(10, 0))
+        ttk.Label(frame_atlas,
+                 text="Only applies if 'Enable downscaling for texture atlases' is checked. Default: 4096",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
 
         # TGA
         frame_tga = ttk.LabelFrame(scrollable, text="TGA Support", padding=10)
         frame_tga.pack(fill="x", padx=10, pady=5)
         ttk.Checkbutton(frame_tga, text="Enable TGA file support",
                        variable=self.enable_tga_support).pack(anchor="w")
+        ttk.Label(frame_tga, text="Process .tga files in addition to .dds files",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        # Alpha Optimization (Optional)
+        frame_alpha = ttk.LabelFrame(scrollable, text="Alpha Optimization (Optional)", padding=10)
+        frame_alpha.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_alpha,
+                 text="Analyzes alpha channels to detect 'fake' alpha (all opaque pixels).\n"
+                      "Textures with unused alpha can be compressed to BC1 instead of BC3, saving space.\n"
+                      "This adds analysis time but can significantly reduce file sizes.",
+                 font=("", 8), wraplength=600, justify="left").pack(anchor="w", pady=(0, 5))
+
+        ttk.Checkbutton(frame_alpha, text="Optimize away unused alpha channels",
+                       variable=self.optimize_unused_alpha).pack(anchor="w")
+        ttk.Label(frame_alpha, text="Scans TGA_RGBA, BGRA, BC2, BC3 files for all-opaque alpha (all pixels = 255)",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        ttk.Label(frame_alpha,
+                 text="⚠ Depending on how much data you are processing and how good your system is this can take a while.\nOn my machine analyzing 30GB of data becomes 1 minute instead of 1 second with this on",
+                 font=("", 8), foreground="orange").pack(anchor="w", pady=(5, 0))
 
         # Parallel
         frame_parallel = ttk.LabelFrame(scrollable, text="Parallel Processing", padding=10)
         frame_parallel.pack(fill="x", padx=10, pady=5)
         ttk.Checkbutton(frame_parallel, text="Enable parallel processing",
                        variable=self.enable_parallel).pack(anchor="w")
-        ttk.Label(frame_parallel, text="Max workers:").pack(side="left", padx=(20, 5))
-        ttk.Combobox(frame_parallel, textvariable=self.max_workers,
+        frame_workers = ttk.Frame(frame_parallel)
+        frame_workers.pack(anchor="w", pady=(5, 0))
+        ttk.Label(frame_workers, text="Max workers:").pack(side="left", padx=(20, 5))
+        ttk.Combobox(frame_workers, textvariable=self.max_workers,
                     values=list(range(1, cpu_count() + 1)), state="readonly", width=10).pack(side="left")
+        ttk.Label(frame_parallel, text="Number of parallel texture processing threads",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        frame_chunk = ttk.Frame(frame_parallel)
+        frame_chunk.pack(anchor="w", pady=(5, 0))
+        ttk.Label(frame_chunk, text="Analysis chunk size:").pack(side="left", padx=(20, 5))
+        ttk.Combobox(frame_chunk, textvariable=self.analysis_chunk_size,
+                    values=[25, 50, 100, 200, 500], state="readonly", width=10).pack(side="left")
+        ttk.Label(frame_parallel, text="Batch size for parallel alpha analysis (higher = more memory, faster)",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
 
     def _create_filtering_settings(self, parent):
         """Create filtering settings"""
@@ -217,6 +417,14 @@ class RegularTextureProcessorGUI:
         scrollbar.pack(side="right", fill="y")
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
+        # Normal Map Exclusion
+        frame_normal = ttk.LabelFrame(scrollable, text="Normal Map Exclusion", padding=10)
+        frame_normal.pack(fill="x", padx=10, pady=5)
+        ttk.Checkbutton(frame_normal, text="Exclude normal maps (_n, _nh suffixes)",
+                       variable=self.exclude_normal_maps).pack(anchor="w")
+        ttk.Label(frame_normal, text="Use the Normal Map Optimizer for these files instead",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
         # Whitelist
         frame_white = ttk.LabelFrame(scrollable, text="Path Whitelist", padding=10)
         frame_white.pack(fill="x", padx=10, pady=5)
@@ -224,18 +432,24 @@ class RegularTextureProcessorGUI:
                        variable=self.use_path_whitelist).pack(anchor="w")
 
         # Blacklist
-        frame_black = ttk.LabelFrame(scrollable, text="Path Blacklist", padding=10)
+        frame_black = ttk.LabelFrame(scrollable, text="Path Blacklist (Skip Entirely)", padding=10)
         frame_black.pack(fill="x", padx=10, pady=5)
-        ttk.Checkbutton(frame_black, text="Skip paths containing 'icon', 'icons', 'bookart'",
+        blacklist_str = ", ".join(DEFAULT_BLACKLIST)
+        ttk.Checkbutton(frame_black, text=f"Skip paths containing: {blacklist_str}",
                        variable=self.use_path_blacklist).pack(anchor="w")
         ttk.Label(frame_black, text="Custom blacklist (comma-separated):").pack(anchor="w", pady=(10, 0))
         ttk.Entry(frame_black, textvariable=self.custom_blacklist, width=50).pack(anchor="w", pady=5)
 
-        # Excluded
-        frame_excluded = ttk.LabelFrame(scrollable, text="Always Excluded", padding=10)
-        frame_excluded.pack(fill="x", padx=10, pady=5)
-        ttk.Label(frame_excluded, text="Files ending in _n.dds, _N.dds, _nh.dds, _NH.dds\n"
-                 "(Use Normal Map Optimizer for these)").pack(anchor="w")
+        # No-mipmap paths
+        frame_nomip = ttk.LabelFrame(scrollable, text="No-Mipmap Paths", padding=10)
+        frame_nomip.pack(fill="x", padx=10, pady=5)
+        nomip_str = ", ".join(DEFAULT_NO_MIPMAPS)
+        ttk.Checkbutton(frame_nomip, text="Skip mipmap generation for UI paths",
+                       variable=self.use_no_mipmap_paths).pack(anchor="w")
+        ttk.Label(frame_nomip, text=f"Paths: {nomip_str}",
+                 font=("", 8), wraplength=400).pack(anchor="w", pady=(5, 0))
+        ttk.Label(frame_nomip, text="These files are displayed at 1:1 scale (no mipmaps needed)",
+                 font=("", 8)).pack(anchor="w")
 
     def _create_process_tab(self, parent):
         """Create processing tab"""
@@ -288,15 +502,114 @@ class RegularTextureProcessorGUI:
         self.root.update_idletasks()
 
     def export_log(self):
+        """Export detailed analysis report with complete file listings."""
         content = self.log_text.get("1.0", "end-1c")
         if not content.strip():
             messagebox.showwarning("Warning", "No log content")
             return
+
         path = filedialog.asksaveasfilename(defaultextension=".txt", initialfile="analysis_report.txt")
-        if path:
-            with open(path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            messagebox.showinfo("Success", f"Saved to {path}")
+        if not path:
+            return
+
+        # Build detailed report
+        lines = [content, "\n"]
+
+        # Excluded files section
+        if self.last_filter_stats:
+            lines.append("\n" + "=" * 60)
+            lines.append("EXCLUDED FILES")
+            lines.append("=" * 60 + "\n")
+
+            # Normal maps
+            normal_files = self.last_filter_stats.get('normal_map_files', [])
+            if normal_files:
+                lines.append(f"\n--- Normal Maps (_n, _nh): {len(normal_files)} files ---")
+                for f in sorted(normal_files):
+                    lines.append(f"  {f}")
+
+            # Blacklisted paths
+            blacklist_files = self.last_filter_stats.get('blacklist_files', [])
+            if blacklist_files:
+                lines.append(f"\n--- Blacklisted Paths: {len(blacklist_files)} files ---")
+                for f in sorted(blacklist_files):
+                    lines.append(f"  {f}")
+
+        # Mipmap regeneration section
+        if self.last_action_groups and self.last_action_groups.get('missing_mipmaps'):
+            lines.append("\n" + "=" * 60)
+            lines.append("MIPMAP REGENERATION")
+            lines.append("=" * 60 + "\n")
+
+            mipmap_files = self.last_action_groups['missing_mipmaps']
+            # Group by format
+            by_format = {}
+            for r in mipmap_files:
+                fmt = r.format
+                if fmt not in by_format:
+                    by_format[fmt] = []
+                by_format[fmt].append(r)
+
+            for fmt, files in sorted(by_format.items(), key=lambda x: -len(x[1])):
+                lines.append(f"\n--- {fmt}: {len(files)} files ---")
+                for r in sorted(files, key=lambda x: x.relative_path):
+                    lines.append(f"  {r.relative_path}")
+
+        # Resize section (with dimensions)
+        if self.last_analysis_results:
+            resized = [r for r in self.last_analysis_results
+                      if r.new_width != r.width or r.new_height != r.height]
+            if resized:
+                lines.append("\n" + "=" * 60)
+                lines.append("RESIZED TEXTURES")
+                lines.append("=" * 60 + "\n")
+
+                lines.append(f"\n--- {len(resized)} files will be resized ---")
+                for r in sorted(resized, key=lambda x: x.relative_path):
+                    lines.append(f"  {r.relative_path}: {r.width}x{r.height} → {r.new_width}x{r.new_height}")
+
+        # Conversion details section
+        if self.last_conversion_stats:
+            lines.append("\n" + "=" * 60)
+            lines.append("DETAILED FILE LISTINGS BY CONVERSION TYPE")
+            lines.append("=" * 60 + "\n")
+
+            # Group by conversion type
+            for (src_fmt, dst_fmt, has_resize), data in sorted(
+                self.last_conversion_stats.items(),
+                key=lambda x: (-x[1]['count'], x[0][0], x[0][1])
+            ):
+                resize_note = " (with resize)" if has_resize else ""
+                lines.append(f"\n--- {src_fmt} → {dst_fmt}{resize_note}: {data['count']} files ---")
+                # Include dimensions for each file if available
+                if self.last_analysis_results:
+                    result_map = {r.relative_path: r for r in self.last_analysis_results}
+                    for f in sorted(data['files']):
+                        r = result_map.get(f)
+                        if r and (r.new_width != r.width or r.new_height != r.height):
+                            lines.append(f"  {f} ({r.width}x{r.height} → {r.new_width}x{r.new_height})")
+                        else:
+                            lines.append(f"  {f}")
+                else:
+                    for f in sorted(data['files']):
+                        lines.append(f"  {f}")
+
+        if self.last_alpha_stats:
+            lines.append("\n" + "=" * 60)
+            lines.append("ALPHA OPTIMIZATION DETAILS")
+            lines.append("=" * 60 + "\n")
+
+            for conversion, data in sorted(
+                self.last_alpha_stats.items(),
+                key=lambda x: -x[1]['count']
+            ):
+                lines.append(f"\n--- {conversion}: {data['count']} files ---")
+                for f in sorted(data['files']):
+                    lines.append(f"  {f}")
+
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write("\n".join(lines))
+        messagebox.showinfo("Success", f"Detailed report saved to {path}")
 
     def export_settings(self):
         path = filedialog.asksaveasfilename(defaultextension=".json", initialfile="settings.json")
@@ -313,11 +626,11 @@ class RegularTextureProcessorGUI:
 
     def get_settings(self) -> RegularSettings:
         whitelist = ["Textures"] if self.use_path_whitelist.get() else []
-        blacklist = ["icon", "icons", "bookart"] if self.use_path_blacklist.get() else []
+        blacklist = DEFAULT_BLACKLIST.copy() if self.use_path_blacklist.get() else []
         custom = [x.strip() for x in self.custom_blacklist.get().split(",") if x.strip()]
+        no_mipmap_paths = DEFAULT_NO_MIPMAPS.copy() if self.use_no_mipmap_paths.get() else []
 
         settings = RegularSettings(
-            target_format=self.target_format.get(),
             scale_factor=self.scale_factor.get(),
             max_resolution=self.max_resolution.get(),
             min_resolution=self.min_resolution.get(),
@@ -331,11 +644,18 @@ class RegularTextureProcessorGUI:
             enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
             atlas_max_resolution=self.atlas_max_resolution.get(),
             allow_well_compressed_passthrough=self.allow_well_compressed_passthrough.get(),
+            preserve_compressed_format=self.preserve_compressed_format.get(),
+            copy_passthrough_files=self.copy_passthrough_files.get(),
+            exclude_normal_maps=self.exclude_normal_maps.get(),
             enable_tga_support=self.enable_tga_support.get(),
+            optimize_unused_alpha=self.optimize_unused_alpha.get(),
+            alpha_threshold=self.alpha_threshold.get(),
+            analysis_chunk_size=self.analysis_chunk_size.get(),
         )
         settings.path_whitelist = whitelist
         settings.path_blacklist = blacklist
         settings.custom_blacklist = custom
+        settings.no_mipmap_paths = no_mipmap_paths
         settings.small_texture_threshold = self.small_texture_threshold.get()
         return settings
 
@@ -403,7 +723,44 @@ class RegularTextureProcessorGUI:
                 self.log("  - A 'Textures' folder in the path (if whitelist enabled)")
                 self.log("  - No 'icon', 'icons', 'bookart' in path (if blacklist enabled)")
                 messagebox.showinfo("Done", "No texture files found")
+                self.processing = False
+                self.analyze_btn.configure(state="normal")
                 return
+
+            # Display filter statistics
+            if hasattr(self.processor, 'filter_stats'):
+                stats = self.processor.filter_stats
+                total_found = stats.get('total_textures_found', 0)
+                excluded_normal = stats.get('excluded_normal_maps', 0)
+                excluded_whitelist = stats.get('excluded_whitelist', 0)
+                excluded_blacklist = stats.get('excluded_blacklist', 0)
+                total_excluded = excluded_normal + excluded_whitelist + excluded_blacklist
+
+                if total_excluded > 0:
+                    self.log(f"=== Filter Results ===")
+                    self.log(f"Total texture files scanned: {total_found}")
+                    self.log(f"Included for processing: {stats.get('included', len(results))}")
+                    self.log(f"Excluded: {total_excluded}")
+
+                    if excluded_normal > 0:
+                        self.log(f"  - Normal maps (_n, _nh): {excluded_normal}")
+
+                    if excluded_whitelist > 0:
+                        self.log(f"  - Not in 'Textures' folder: {excluded_whitelist}")
+                        examples = stats.get('whitelist_examples', [])
+                        for ex in examples[:3]:
+                            self.log(f"      {ex}")
+                        if len(examples) > 3:
+                            self.log(f"      ... and {excluded_whitelist - 3} more")
+
+                    if excluded_blacklist > 0:
+                        self.log(f"  - Blacklisted paths (icon, bookart, etc.): {excluded_blacklist}")
+                        examples = stats.get('blacklist_examples', [])
+                        for ex in examples[:3]:
+                            self.log(f"      {ex}")
+                        if len(examples) > 3:
+                            self.log(f"      ... and {excluded_blacklist - 3} more")
+                    self.log("")
 
             # Count files by type
             dds_count = sum(1 for r in results if not r.relative_path.lower().endswith('.tga'))
@@ -426,8 +783,10 @@ class RegularTextureProcessorGUI:
             action_groups = {
                 'resize_and_reformat': [], 'resize_only': [], 'reformat_only': [],
                 'no_change': [], 'passthrough': [], 'missing_mipmaps': [],
-                'tga_conversion': [], 'alpha_preserved': []
+                'tga_conversion': [], 'no_mipmaps': [], 'dxt1a': [], 'alpha_optimized': []
             }
+            # Track alpha optimization by original format
+            alpha_optimization_stats = {}  # e.g., {'BC3/DXT5': 5, 'TGA_RGBA': 3}
             oversized_textures = []
 
             for r in results:
@@ -460,10 +819,30 @@ class RegularTextureProcessorGUI:
                     action_groups['missing_mipmaps'].append(r)
                 if r.format in ('TGA', 'TGA_RGB', 'TGA_RGBA'):
                     action_groups['tga_conversion'].append(r)
-                if r.has_alpha and r.target_format in ('BC3/DXT5', 'BGRA'):
-                    action_groups['alpha_preserved'].append(r)
                 if r.width and r.height and max(r.width, r.height) > 2048:
-                    oversized_textures.append((r.relative_path, r.width, r.height))
+                    # Track if it will actually be resized (accounts for atlas protection)
+                    will_be_resized = (r.new_width != r.width) or (r.new_height != r.height)
+                    oversized_textures.append((r.relative_path, r.width, r.height, will_be_resized))
+
+                # Track no-mipmap files from warnings
+                for warning in (r.warnings or []):
+                    if "No-mipmap path" in warning:
+                        action_groups['no_mipmaps'].append(r)
+
+                # Track DXT1a textures (BC1 using 1-bit alpha)
+                if hasattr(r, 'has_dxt1a') and r.has_dxt1a:
+                    action_groups['dxt1a'].append(r)
+
+                # Track alpha optimization
+                if hasattr(r, 'alpha_optimized') and r.alpha_optimized:
+                    action_groups['alpha_optimized'].append(r)
+                    orig_fmt = getattr(r, 'original_format', 'UNKNOWN')
+                    target_fmt = r.target_format or 'UNKNOWN'
+                    key = f"{orig_fmt} → {target_fmt}"
+                    if key not in alpha_optimization_stats:
+                        alpha_optimization_stats[key] = {'count': 0, 'files': []}
+                    alpha_optimization_stats[key]['count'] += 1
+                    alpha_optimization_stats[key]['files'].append(r.relative_path)
 
                 # Track conversions (non-passthrough)
                 if not r.is_passthrough:
@@ -472,6 +851,14 @@ class RegularTextureProcessorGUI:
                         conversion_stats[key] = {'count': 0, 'files': []}
                     conversion_stats[key]['count'] += 1
                     conversion_stats[key]['files'].append(r.relative_path)
+
+            # Store for detailed export
+            self.last_analysis_results = results
+            self.last_conversion_stats = conversion_stats
+            self.last_alpha_stats = alpha_optimization_stats
+            self.last_action_groups = action_groups
+            if hasattr(self.processor, 'filter_stats'):
+                self.last_filter_stats = self.processor.filter_stats
 
             # Current State
             self.log("\n=== Current State ===")
@@ -484,20 +871,58 @@ class RegularTextureProcessorGUI:
             for fmt, stats in sorted(format_stats.items(), key=lambda x: -x[1]['count']):
                 self.log(f"  {fmt}: {stats['count']} files, {format_size(stats['size'])} total")
 
-            # Format Conversions
-            if conversion_stats:
-                self.log("\n=== Format Conversions ===")
-                for (src_fmt, dst_fmt, has_resize), data in sorted(conversion_stats.items(), key=lambda x: -x[1]['count']):
-                    resize_label = " + resize" if has_resize else ""
-                    self.log(f"  {src_fmt} -> {dst_fmt}{resize_label}: {data['count']} files")
+            # Separate actual format conversions from same-format reprocessing
+            actual_conversions = {}  # format changes
+            reprocessing_resize = {}  # same format, needs resize
+            reprocessing_mipmaps = {}  # same format, needs mipmap regen
 
-            # Conversion Examples
-            if conversion_stats:
+            for (src_fmt, dst_fmt, has_resize), data in conversion_stats.items():
+                if src_fmt != dst_fmt:
+                    # Actual format conversion
+                    key = (src_fmt, dst_fmt, has_resize)
+                    actual_conversions[key] = data
+                elif has_resize:
+                    # Same format, but resizing
+                    if src_fmt not in reprocessing_resize:
+                        reprocessing_resize[src_fmt] = {'count': 0, 'files': []}
+                    reprocessing_resize[src_fmt]['count'] += data['count']
+                    reprocessing_resize[src_fmt]['files'].extend(data['files'][:5])
+                else:
+                    # Same format, no resize - must be mipmap regeneration
+                    if src_fmt not in reprocessing_mipmaps:
+                        reprocessing_mipmaps[src_fmt] = {'count': 0, 'files': []}
+                    reprocessing_mipmaps[src_fmt]['count'] += data['count']
+                    reprocessing_mipmaps[src_fmt]['files'].extend(data['files'][:5])
+
+            # Show actual format conversions
+            if actual_conversions:
+                self.log("\n=== Format Conversions ===")
+                for (src_fmt, dst_fmt, has_resize), data in sorted(actual_conversions.items(), key=lambda x: -x[1]['count']):
+                    resize_label = " + resize" if has_resize else ""
+                    self.log(f"  {src_fmt} → {dst_fmt}{resize_label}: {data['count']} files")
+
+            # Show same-format reprocessing for resize
+            if reprocessing_resize:
+                total_resize = sum(d['count'] for d in reprocessing_resize.values())
+                self.log(f"\n=== Resize Only ({total_resize} files, keeping format) ===")
+                for fmt, data in sorted(reprocessing_resize.items(), key=lambda x: -x[1]['count']):
+                    self.log(f"  {fmt}: {data['count']} files")
+
+            # Show same-format reprocessing for mipmaps
+            if reprocessing_mipmaps:
+                total_mipmap = sum(d['count'] for d in reprocessing_mipmaps.values())
+                self.log(f"\n=== Mipmap Regeneration ({total_mipmap} files, same format/size) ===")
+                for fmt, data in sorted(reprocessing_mipmaps.items(), key=lambda x: -x[1]['count']):
+                    self.log(f"  {fmt}: {data['count']} files")
+                self.log("Note: These files have missing/incomplete mipmaps that will be regenerated.")
+
+            # Conversion Examples (only for actual format changes)
+            if actual_conversions:
                 self.log("\n=== Conversion Examples ===")
-                for (src_fmt, dst_fmt, has_resize), data in sorted(conversion_stats.items(), key=lambda x: -x[1]['count'])[:5]:
+                for (src_fmt, dst_fmt, has_resize), data in sorted(actual_conversions.items(), key=lambda x: -x[1]['count'])[:5]:
                     resize_label = " + resize" if has_resize else ""
                     count = data['count']
-                    self.log(f"{src_fmt} -> {dst_fmt}{resize_label}: {count} files")
+                    self.log(f"{src_fmt} → {dst_fmt}{resize_label}: {count} files")
                     for f in data['files'][:3]:
                         self.log(f"    - {f}")
                     if count > 3:
@@ -536,7 +961,7 @@ class RegularTextureProcessorGUI:
 
             # Issues & Auto-Fixes
             has_issues = (action_groups['missing_mipmaps'] or action_groups['tga_conversion'] or
-                         action_groups['alpha_preserved'] or oversized_textures)
+                         action_groups['no_mipmaps'] or oversized_textures)
 
             if has_issues:
                 self.log("\n=== Issues & Auto-Fixes ===")
@@ -556,25 +981,61 @@ class RegularTextureProcessorGUI:
                     if len(action_groups['tga_conversion']) > 3:
                         self.log(f"      ... and {len(action_groups['tga_conversion']) - 3} more")
 
-                if action_groups['alpha_preserved']:
-                    self.log(f"\n[i] Auto-fix: {len(action_groups['alpha_preserved'])} file(s) with alpha channel preserved (using BC3/BGRA)")
+                if action_groups['no_mipmaps']:
+                    self.log(f"\n[i] No-mipmaps: {len(action_groups['no_mipmaps'])} file(s) will be processed without mipmaps")
+                    self.log("    (UI elements like splash screens, birthsigns, levelup)")
+                    for r in action_groups['no_mipmaps'][:3]:
+                        self.log(f"      - {r.relative_path}")
+                    if len(action_groups['no_mipmaps']) > 3:
+                        self.log(f"      ... and {len(action_groups['no_mipmaps']) - 3} more")
 
                 if oversized_textures:
-                    max_res = settings.max_resolution
-                    will_fix = [t for t in oversized_textures if max(t[1], t[2]) > max_res and max_res > 0]
-                    if will_fix and max_res > 0:
-                        self.log(f"\n[i] Auto-fix: {len(will_fix)} texture(s) larger than {max_res}px will be downscaled")
-                        for path, w, h in will_fix[:3]:
+                    # Use actual analysis results (accounts for atlas protection, etc.)
+                    will_fix = [t for t in oversized_textures if t[3]]  # t[3] = will_be_resized
+                    wont_fix = [t for t in oversized_textures if not t[3]]
+
+                    if will_fix:
+                        self.log(f"\n[i] Auto-fix: {len(will_fix)} texture(s) larger than 2048px will be downscaled")
+                        for path, w, h, _ in will_fix[:3]:
                             self.log(f"      - {path} ({w}x{h})")
                         if len(will_fix) > 3:
                             self.log(f"      ... and {len(will_fix) - 3} more")
-                    else:
-                        self.log(f"\n[!] Resolution: {len(oversized_textures)} texture(s) larger than 2048px")
-                        for path, w, h in oversized_textures[:5]:
+
+                    if wont_fix:
+                        self.log(f"\n[i] Skipped: {len(wont_fix)} large texture(s) not resized (atlas protection or settings)")
+                        for path, w, h, _ in wont_fix[:3]:
                             self.log(f"      - {path} ({w}x{h})")
-                        if len(oversized_textures) > 5:
-                            self.log(f"      ... and {len(oversized_textures) - 5} more")
-                        self.log("    Set 'Max Resolution' to auto-downscale if needed")
+                        if len(wont_fix) > 3:
+                            self.log(f"      ... and {len(wont_fix) - 3} more")
+
+            # Alpha Analysis Section (always show if DXT1a found or alpha optimization enabled)
+            has_alpha_info = action_groups['dxt1a'] or action_groups['alpha_optimized']
+
+            if has_alpha_info:
+                self.log("\n=== Alpha Channel Analysis ===")
+
+                # DXT1a detection (BC1 with 1-bit transparency)
+                if action_groups['dxt1a']:
+                    self.log(f"\n[i] DXT1a detected: {len(action_groups['dxt1a'])} BC1/DXT1 file(s) use 1-bit alpha")
+                    self.log("    These textures use punch-through transparency (fully opaque or fully transparent)")
+                    for r in action_groups['dxt1a'][:3]:
+                        self.log(f"      - {r.relative_path}")
+                    if len(action_groups['dxt1a']) > 3:
+                        self.log(f"      ... and {len(action_groups['dxt1a']) - 3} more")
+
+                # Alpha optimization (unused alpha detected)
+                if action_groups['alpha_optimized']:
+                    total_optimized = len(action_groups['alpha_optimized'])
+                    self.log(f"\n[i] Alpha optimization: {total_optimized} file(s) with unused alpha channel")
+                    self.log("    Alpha-capable formats converted to non-alpha formats")
+
+                    # Show breakdown by conversion type (e.g., "BGRA → BC1", "BGRA → BGR")
+                    for conversion, data in sorted(alpha_optimization_stats.items(), key=lambda x: -x[1]['count']):
+                        self.log(f"      {conversion}: {data['count']} files")
+                        for f in data['files'][:2]:
+                            self.log(f"        - {f}")
+                        if data['count'] > 2:
+                            self.log(f"        ... and {data['count'] - 2} more")
 
             elapsed = time.time() - start_time
             self.log(f"\n=== Analysis Complete ({format_time(elapsed)}) ===")

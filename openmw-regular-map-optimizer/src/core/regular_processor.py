@@ -5,7 +5,6 @@ Handles file processing, analysis, and conversion for regular (non-normal map) t
 
 from pathlib import Path
 import subprocess
-import re
 import shutil
 import math
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -35,6 +34,8 @@ from core.dds_parser import (
     has_adequate_mipmaps,
     parse_tga_header,
     parse_tga_header_extended,
+    has_meaningful_alpha,
+    analyze_bc1_alpha,
 )
 from core.file_scanner import FileScanner
 from core.utils import format_size, format_time, FORMAT_MAP, FILTER_MAP
@@ -71,6 +72,10 @@ class AnalysisResult:
     warnings: List[str] = None
     is_passthrough: bool = False
     has_alpha: bool = False
+    # Alpha optimization tracking
+    alpha_optimized: bool = False  # True if alpha was detected as unused and optimized away
+    original_format: str = None  # Original format before alpha optimization (e.g., BC3/DXT5 -> BC1/DXT1)
+    has_dxt1a: bool = False  # True if BC1/DXT1 uses 1-bit alpha (DXT1a mode)
 
     def __post_init__(self):
         if self.warnings is None:
@@ -87,8 +92,8 @@ REGULAR_FORMAT_MAP = {
 }
 
 # Formats that support alpha
-ALPHA_FORMATS = ["BC2/DXT3", "BC3/DXT5", "BGRA"]
-NO_ALPHA_FORMATS = ["BC1/DXT1", "BGR"]
+ALPHA_FORMATS = ["BC2/DXT3", "BC3/DXT5", "BGRA", "RGBA"]
+NO_ALPHA_FORMATS = ["BC1/DXT1", "BGR", "RGB"]
 
 
 def _normalize_format(fmt: str) -> str:
@@ -99,8 +104,10 @@ def _normalize_format(fmt: str) -> str:
         'BC2_UNORM': 'BC2/DXT3',
         'BC1_UNORM': 'BC1/DXT1',
         'B8G8R8A8_UNORM': 'BGRA',
+        'R8G8B8A8_UNORM': 'RGBA',
         'B8G8R8X8_UNORM': 'BGR',
-        'B8G8R8_UNORM': 'BGR'
+        'B8G8R8_UNORM': 'BGR',
+        'R8G8B8_UNORM': 'RGB',
     }
     return format_map.get(fmt, fmt)
 
@@ -124,14 +131,22 @@ def _is_well_compressed(format_str: str, mipmap_count: int, width: int, height: 
 
 
 def _has_alpha_channel(format_str: str) -> bool:
-    """Check if a format has an alpha channel"""
+    """
+    Check if a format has an alpha channel.
+
+    Note: BC1/DXT1 can have 1-bit alpha (DXT1a) but detecting it requires
+    scanning the compressed block data. We treat BC1 as opaque for passthrough
+    purposes - if it has DXT1a, it should stay as BC1.
+    """
     # Handle TGA formats directly
     if format_str == 'TGA_RGBA':
         return True
     if format_str in ('TGA_RGB', 'TGA'):
         return False
     normalized = _normalize_format(format_str)
-    return normalized in ['BC3/DXT5', 'BC2/DXT3', 'BGRA']
+    # BC1/DXT1 might have 1-bit alpha (DXT1a) but we can't detect without scanning blocks
+    # For passthrough, we treat BC1 as "handled" - don't upgrade to BC3
+    return normalized in ['BC3/DXT5', 'BC2/DXT3', 'BGRA', 'RGBA']
 
 
 def _is_texture_atlas(file_path: Path) -> bool:
@@ -142,6 +157,52 @@ def _is_texture_atlas(file_path: Path) -> bool:
     if 'atl' in path_parts:
         return True
     return False
+
+
+def _matches_pattern(file_path: Path, patterns: list) -> bool:
+    """
+    Check if a file matches any of the given patterns.
+
+    Patterns can be:
+    - Folder names: "birthsigns", "splash" (matches any file in that folder)
+    - File patterns with wildcards: "scroll.*", "cursor*", "menu_*"
+    """
+    import fnmatch
+
+    if not patterns:
+        return False
+
+    path_str = str(file_path).lower()
+    filename = file_path.name.lower()
+    stem = file_path.stem.lower()
+    path_parts = [p.lower() for p in file_path.parts]
+
+    for pattern in patterns:
+        pattern_lower = pattern.lower()
+
+        # Check if it's a wildcard pattern (contains * or ?)
+        if '*' in pattern_lower or '?' in pattern_lower:
+            # Match against filename
+            if fnmatch.fnmatch(filename, pattern_lower):
+                return True
+            # Also match against stem (without extension)
+            if fnmatch.fnmatch(stem, pattern_lower):
+                return True
+        else:
+            # It's a folder/path component match
+            if pattern_lower in path_parts:
+                return True
+            # Also check if filename starts with pattern (for menu_, tx_menu_, etc.)
+            if filename.startswith(pattern_lower) or stem.startswith(pattern_lower):
+                return True
+
+    return False
+
+
+def _should_skip_mipmaps(file_path: Path, settings: dict) -> bool:
+    """Check if mipmaps should be skipped for this file."""
+    no_mipmap_paths = settings.get('no_mipmap_paths', [])
+    return _matches_pattern(file_path, no_mipmap_paths)
 
 
 def _calculate_new_dimensions(orig_width: int, orig_height: int, settings: dict,
@@ -188,77 +249,86 @@ def _calculate_new_dimensions(orig_width: int, orig_height: int, settings: dict,
 
 
 def _process_texture_static(input_path: Path, output_path: Path, settings: dict) -> bool:
-    """Process a single texture file using texconv."""
+    """
+    Process a single texture file using texconv.
+
+    Decision Priority Order (matches _analyze_file_worker):
+    1. Compressed (BC1/BC2/BC3): passthrough if valid, else reprocess keeping format
+    2. Uncompressed: small -> BGR/BGRA, normal -> BC1/BC3 based on alpha
+    """
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Get dimensions, format, and mipmap count
-        dimensions, format_name, mipmap_count = parse_dds_header_extended(input_path)
-        if not dimensions:
-            # Try TGA or other format
-            # For TGA, we can't parse the header directly, so we'll let texconv handle it
-            if input_path.suffix.lower() == '.tga':
-                # TGA files are always treated as uncompressed, proceed with conversion
-                dimensions = (0, 0)  # Will be determined by texconv
-                format_name = "TGA"
-                mipmap_count = 1
-            else:
+        # === STEP 0: Parse file header ===
+        if input_path.suffix.lower() == '.tga':
+            dimensions, format_name, mipmap_count = parse_tga_header_extended(input_path)
+            if not dimensions:
                 return False
+            has_alpha = (format_name == 'TGA_RGBA')
+
+            # Optional: Check if TGA alpha is actually used
+            optimize_alpha = settings.get('optimize_unused_alpha', False)
+            if optimize_alpha and has_alpha:
+                alpha_threshold = settings.get('alpha_threshold', 250)
+                actually_has_alpha = has_meaningful_alpha(input_path, format_name, alpha_threshold)
+                if not actually_has_alpha:
+                    has_alpha = False
+        else:
+            dimensions, format_name, mipmap_count = parse_dds_header_extended(input_path)
+            if not dimensions:
+                return False
+            format_name = _normalize_format(format_name)
+            has_alpha = _has_alpha_channel(format_name)
+
+        # Optional: Check if alpha is actually used (not just declared in format)
+        optimize_alpha = settings.get('optimize_unused_alpha', False)
+        if optimize_alpha and has_alpha:
+            alpha_threshold = settings.get('alpha_threshold', 250)
+            actually_has_alpha = has_meaningful_alpha(input_path, format_name, alpha_threshold)
+            if not actually_has_alpha:
+                has_alpha = False
 
         orig_width, orig_height = dimensions
-
-        # For TGA, we need to query texdiag for dimensions
-        if format_name == "TGA":
-            try:
-                result = subprocess.run(
-                    [TEXDIAG_EXE, "info", str(input_path)],
-                    capture_output=True, text=True, timeout=30
-                )
-                width_match = re.search(r'width\s*=\s*(\d+)', result.stdout)
-                height_match = re.search(r'height\s*=\s*(\d+)', result.stdout)
-                if width_match and height_match:
-                    orig_width = int(width_match.group(1))
-                    orig_height = int(height_match.group(1))
-            except Exception:
-                pass
-
         new_width, new_height = _calculate_new_dimensions(orig_width, orig_height, settings, input_path)
+        will_resize = (new_width != orig_width) or (new_height != orig_height)
 
-        # Check for passthrough (well-compressed textures)
-        if settings.get('allow_well_compressed_passthrough', True):
-            will_resize = (new_width != orig_width) or (new_height != orig_height)
+        # === STEP 1: Handle compressed textures (BC1/BC2/BC3) ===
+        is_compressed = format_name in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']
+        has_valid_mipmaps = _is_well_compressed(format_name, mipmap_count, orig_width, orig_height)
 
-            if not will_resize and _is_well_compressed(format_name, mipmap_count, orig_width, orig_height):
-                # Just copy the file
-                shutil.copy2(input_path, output_path)
+        if is_compressed:
+            if not will_resize and has_valid_mipmaps:
+                # Passthrough: copy as-is if enabled
+                if settings.get('copy_passthrough_files', True):
+                    shutil.copy2(input_path, output_path)
                 return True
+            else:
+                # Reprocess but keep same format
+                target_format = format_name
 
-        # Determine target format
-        target_format = settings.get('target_format', 'BC1/DXT1')
+        # === STEP 2: Handle uncompressed textures ===
+        else:
+            small_threshold = settings.get('small_texture_threshold', 128)
+            use_small_override = settings.get('use_small_texture_override', True)
+            min_dim = min(new_width, new_height)
 
-        # Check if source has alpha - if so and target doesn't support alpha, use BC3
-        has_alpha = _has_alpha_channel(format_name)
-        if has_alpha and target_format in NO_ALPHA_FORMATS:
-            # Preserve alpha by using BC3 instead
-            target_format = 'BC3/DXT5'
-
-        # Small texture override
-        if settings.get('use_small_texture_override', True):
-            is_already_compressed = _normalize_format(format_name) in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']
-
-            if not is_already_compressed:
-                min_dim = min(new_width, new_height)
-                threshold = settings.get('small_texture_threshold', 128)
-                if threshold > 0 and min_dim <= threshold:
-                    target_format = "BGRA" if has_alpha else "BGR"
+            if use_small_override and small_threshold > 0 and min_dim <= small_threshold:
+                # Small texture: keep uncompressed
+                target_format = "BGRA" if has_alpha else "BGR"
+            else:
+                # Normal size: compress based on alpha
+                target_format = 'BC3/DXT5' if has_alpha else 'BC1/DXT1'
 
         texconv_format = REGULAR_FORMAT_MAP.get(target_format, "BC1_UNORM")
+
+        # Check if mipmaps should be skipped for this file
+        skip_mipmaps = _should_skip_mipmaps(input_path, settings)
 
         # Build texconv command
         cmd = [
             TEXCONV_EXE,
             "-f", texconv_format,
-            "-m", "0",  # Generate all mipmaps
+            "-m", "1" if skip_mipmaps else "0",  # 1 = no mipmaps, 0 = full chain
             "-dx9"
         ]
 
@@ -356,7 +426,19 @@ def _process_file_worker(args):
 
 
 def _analyze_file_worker(args):
-    """Worker function for parallel analysis."""
+    """
+    Worker function for parallel analysis.
+
+    Decision Priority Order (simplified for regular textures):
+    =========================================================
+    1. Compressed textures (BC1/BC2/BC3):
+       - If NOT resizing AND has valid mipmaps -> passthrough (copy as-is or skip)
+       - If resizing OR invalid mipmaps -> reprocess, keep same format
+    2. Uncompressed textures (TGA, BGR, BGRA):
+       - Small textures (below threshold) -> keep uncompressed (BGR/BGRA)
+       - RGB (no alpha) -> BC1
+       - RGBA (has alpha) -> BC3
+    """
     file_path, source_dir_path, settings = args
 
     input_file = Path(file_path)
@@ -370,10 +452,8 @@ def _analyze_file_worker(args):
     )
 
     try:
-        # Get dimensions, format, and mipmap count
+        # === STEP 0: Parse file header ===
         if input_file.suffix.lower() == '.tga':
-            # TGA files - use fast header parser (no subprocess needed)
-            # TGA is always uncompressed with no mipmaps
             dimensions, format_name, mipmap_count = parse_tga_header_extended(input_file)
             if not dimensions:
                 result.error = "Could not parse TGA header"
@@ -383,64 +463,111 @@ def _analyze_file_worker(args):
             result.mipmap_count = 1  # TGA never has mipmaps
         else:
             dimensions, format_name, mipmap_count = parse_dds_header_extended(input_file)
-
             if not dimensions:
                 result.error = "Could not determine dimensions"
                 return result
-
             result.width, result.height = dimensions
             result.format = _normalize_format(format_name)
             result.mipmap_count = mipmap_count
 
-        # Check for alpha
+        # Determine if source has alpha
         result.has_alpha = _has_alpha_channel(result.format)
 
-        # Calculate new dimensions
+        # Check for BC1/DXT1 with 1-bit alpha (DXT1a mode)
+        if result.format == 'BC1/DXT1':
+            try:
+                if analyze_bc1_alpha(input_file):
+                    result.has_dxt1a = True
+                    result.warnings.append("BC1/DXT1 uses 1-bit alpha (DXT1a mode)")
+            except Exception:
+                pass  # Ignore errors, assume no DXT1a
+
+        # Optional: Check if alpha is actually used (not just declared in format)
+        optimize_alpha = settings.get('optimize_unused_alpha', False)
+        if optimize_alpha and result.has_alpha:
+            alpha_threshold = settings.get('alpha_threshold', 255)
+            # Check if alpha is actually meaningful (not all opaque)
+            actually_has_alpha = has_meaningful_alpha(input_file, result.format, alpha_threshold)
+            if not actually_has_alpha:
+                # Track the optimization
+                result.alpha_optimized = True
+                result.original_format = result.format
+                result.has_alpha = False
+                # Note: actual target format determined later (BC1 for normal size, BGR for small)
+
+        # Calculate new dimensions (handles atlas protection, max/min resolution)
         is_atlas = _is_texture_atlas(input_file)
         new_width, new_height = _calculate_new_dimensions(
             result.width, result.height, settings, is_atlas=is_atlas
         )
         result.new_width = new_width
         result.new_height = new_height
-
         will_resize = (new_width != result.width) or (new_height != result.height)
 
-        # Check for passthrough
-        if settings.get('allow_well_compressed_passthrough', True) and not will_resize:
-            if _is_well_compressed(result.format, result.mipmap_count, result.width, result.height):
+        # === STEP 1: Handle compressed textures (BC1/BC2/BC3) ===
+        is_compressed = result.format in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']
+        has_valid_mipmaps = _is_well_compressed(result.format, result.mipmap_count, result.width, result.height)
+
+        if is_compressed:
+            # Determine target format based on alpha optimization
+            if result.alpha_optimized:
+                # Alpha was unused - downgrade to BC1
+                target_format = 'BC1/DXT1'
+            else:
+                # Keep original format
+                target_format = result.format
+
+            if not will_resize and has_valid_mipmaps and not result.alpha_optimized:
+                # Passthrough: already compressed with valid mipmaps, no resize needed, no alpha change
                 result.is_passthrough = True
                 result.target_format = result.format
-                result.warnings.append("Well-compressed passthrough - file will be copied as-is")
+                result.warnings.append(f"Passthrough: {result.format} with valid mipmaps")
                 result.projected_size = file_size
                 return result
+            else:
+                # Need to reprocess (resize, fix mipmaps, or alpha optimization)
+                result.target_format = target_format
+                if result.alpha_optimized:
+                    result.warnings.append(f"Alpha unused ({result.original_format} → {target_format})")
+                elif will_resize:
+                    result.warnings.append(f"Reprocessing {result.format}: resize required")
+                else:
+                    result.warnings.append(f"Reprocessing {result.format}: mipmap regeneration")
 
-        # Determine target format
-        target_format = settings.get('target_format', 'BC1/DXT1')
+        # === STEP 2: Handle uncompressed textures (TGA, BGR, BGRA) ===
+        else:
+            # Check small texture threshold first
+            small_threshold = settings.get('small_texture_threshold', 128)
+            use_small_override = settings.get('use_small_texture_override', True)
+            min_dim = min(new_width, new_height)
 
-        # Handle alpha
-        if result.has_alpha and target_format in NO_ALPHA_FORMATS:
-            target_format = 'BC3/DXT5'
-            result.warnings.append(f"Source has alpha - using {target_format} instead")
+            if use_small_override and small_threshold > 0 and min_dim <= small_threshold:
+                # Small texture: keep uncompressed
+                result.target_format = "BGRA" if result.has_alpha else "BGR"
+                if result.alpha_optimized:
+                    result.warnings.append(f"Small texture ({min_dim}px) - alpha unused, using BGR")
+                else:
+                    result.warnings.append(f"Small texture ({min_dim}px) - keeping uncompressed as {result.target_format}")
+            else:
+                # Normal size: compress based on alpha
+                if result.has_alpha:
+                    result.target_format = 'BC3/DXT5'
+                else:
+                    result.target_format = 'BC1/DXT1'
+                    if result.alpha_optimized:
+                        result.warnings.append(f"Alpha unused ({result.original_format} → BC1/DXT1)")
 
-        # Small texture override
-        if settings.get('use_small_texture_override', True):
-            is_already_compressed = result.format in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']
+        # === STEP 4: Check mipmap status ===
+        skip_mipmaps = _should_skip_mipmaps(input_file, settings)
 
-            if not is_already_compressed:
-                min_dim = min(new_width, new_height)
-                threshold = settings.get('small_texture_threshold', 128)
-                if threshold > 0 and min_dim <= threshold:
-                    target_format = "BGRA" if result.has_alpha else "BGR"
-                    result.warnings.append(f"Small texture override - using uncompressed {target_format}")
+        if skip_mipmaps:
+            result.warnings.append("No-mipmap path - mipmaps skipped")
+        elif result.mipmap_count == 1 and max(result.width, result.height) > 4:
+            result.warnings.append("Missing mipmaps - will regenerate")
 
-        result.target_format = target_format
-
-        # Check for missing mipmaps warning
-        if result.mipmap_count == 1 and max(result.width, result.height) > 4:
-            result.warnings.append("Missing mipmaps - will regenerate full mipmap chain")
-
-        # Estimate output size
-        num_pixels = new_width * new_height * 1.33  # Mipmap overhead
+        # === STEP 5: Estimate output size ===
+        mipmap_factor = 1.0 if skip_mipmaps else 1.33
+        num_pixels = new_width * new_height * mipmap_factor
         bpp_map = {
             "BC1/DXT1": 4,
             "BC2/DXT3": 8,
@@ -448,8 +575,8 @@ def _analyze_file_worker(args):
             "BGRA": 32,
             "BGR": 24
         }
-        bpp = bpp_map.get(target_format, 8)
-        result.projected_size = int((num_pixels * bpp) / 8) + 128  # 128 for header
+        bpp = bpp_map.get(result.target_format, 8)
+        result.projected_size = int((num_pixels * bpp) / 8) + 128
 
     except Exception as e:
         result.error = str(e)
@@ -478,36 +605,97 @@ class RegularTextureProcessor:
             path_blacklist=blacklist
         )
 
-    def find_textures(self, input_dir: Path) -> List[Path]:
+    def find_textures(self, input_dir: Path, track_filtered: bool = False) -> List[Path]:
         """
         Find all regular texture files in directory.
 
         - Includes: .dds, .tga files
-        - Excludes: Files ending in _n.dds, _nh.dds (normal maps)
+        - Excludes: Files ending in _n, _nh (normal maps) if exclude_normal_maps is True
         - Applies: Path whitelist (Textures) and blacklist (icon, icons, bookart)
+
+        If track_filtered=True, also populates self.filter_stats with counts.
         """
-        # Find DDS files
-        dds_files = self.scanner.find_with_suffix_filter(
-            input_dir,
-            "*.dds",
-            exclude_suffixes=["_n", "_nh"]
-        )
+        # Initialize filter stats if tracking
+        if track_filtered:
+            self.filter_stats = {
+                'total_textures_found': 0,
+                'included': 0,
+                'excluded_normal_maps': 0,
+                'excluded_whitelist': 0,
+                'excluded_blacklist': 0,
+                'blacklist_examples': [],
+                'whitelist_examples': [],
+                # Full lists for export
+                'normal_map_files': [],
+                'blacklist_files': [],
+            }
 
-        # Find TGA files if enabled
-        tga_files = []
+        exclude_normal = getattr(self.settings, 'exclude_normal_maps', True)
+        whitelist = self.scanner.path_whitelist
+        blacklist = self.scanner.path_blacklist
+
+        included_files = []
+
+        # Find all DDS files in one pass
+        all_dds = list(input_dir.rglob("*.dds"))
+
+        # Find all TGA files if enabled
+        all_tga = []
         if hasattr(self.settings, 'enable_tga_support') and self.settings.enable_tga_support:
-            tga_files = self.scanner.find_with_suffix_filter(
-                input_dir,
-                "*.tga",
-                exclude_suffixes=["_n", "_nh"]
-            )
+            all_tga = list(input_dir.rglob("*.tga"))
 
-        return dds_files + tga_files
+        all_textures = all_dds + all_tga
+
+        if track_filtered:
+            self.filter_stats['total_textures_found'] = len(all_textures)
+
+        # Filter in a single pass
+        for f in all_textures:
+            stem_lower = f.stem.lower()
+            path_parts = [p.lower() for p in f.parts]
+
+            # Check normal map exclusion
+            if exclude_normal and (stem_lower.endswith('_n') or stem_lower.endswith('_nh')):
+                if track_filtered:
+                    self.filter_stats['excluded_normal_maps'] += 1
+                    self.filter_stats['normal_map_files'].append(str(f.relative_to(input_dir)))
+                continue
+
+            # Check whitelist
+            if whitelist:
+                if not any(any(w in part for part in path_parts) for w in whitelist):
+                    if track_filtered:
+                        self.filter_stats['excluded_whitelist'] += 1
+                        if len(self.filter_stats['whitelist_examples']) < 5:
+                            self.filter_stats['whitelist_examples'].append(str(f.relative_to(input_dir)))
+                    continue
+
+            # Check blacklist
+            excluded_by_blacklist = False
+            if blacklist:
+                for blocked in blacklist:
+                    if any(blocked in part for part in path_parts):
+                        if track_filtered:
+                            self.filter_stats['excluded_blacklist'] += 1
+                            self.filter_stats['blacklist_files'].append(str(f.relative_to(input_dir)))
+                            if len(self.filter_stats['blacklist_examples']) < 5:
+                                self.filter_stats['blacklist_examples'].append(str(f.relative_to(input_dir)))
+                        excluded_by_blacklist = True
+                        break
+                if excluded_by_blacklist:
+                    continue
+
+            included_files.append(f)
+
+        if track_filtered:
+            self.filter_stats['included'] = len(included_files)
+
+        return included_files
 
     def analyze_files(self, input_dir: Path,
                      progress_callback: Optional[Callable[[int, int], None]] = None) -> List[AnalysisResult]:
         """Analyze all textures and return analysis results."""
-        all_files = self.find_textures(input_dir)
+        all_files = self.find_textures(input_dir, track_filtered=True)
 
         if not all_files:
             return []
@@ -518,13 +706,60 @@ class RegularTextureProcessor:
         import json
         self._settings_hash = hash(json.dumps(settings_dict, sort_keys=True))
 
-        # Sequential analysis (fast parser makes this efficient)
+        # Use parallel processing when alpha optimization is enabled (I/O heavy)
+        use_parallel = (
+            getattr(self.settings, 'optimize_unused_alpha', False) and
+            getattr(self.settings, 'enable_parallel', True) and
+            len(all_files) > 10
+        )
+        max_workers = getattr(self.settings, 'max_workers', max(1, cpu_count() - 1))
+        chunk_size = getattr(self.settings, 'analysis_chunk_size', 100)
+
         results = []
-        for i, f in enumerate(all_files, 1):
-            result = _analyze_file_worker((str(f), str(input_dir), settings_dict))
-            results.append(result)
-            if progress_callback:
-                progress_callback(i, len(all_files))
+
+        if use_parallel:
+            # Parallel analysis with chunked submission
+            with ProcessPoolExecutor(max_workers=max_workers) as executor:
+                completed = 0
+                total_files = len(all_files)
+
+                # Process in chunks to control memory usage
+                for chunk_start in range(0, total_files, chunk_size):
+                    chunk_end = min(chunk_start + chunk_size, total_files)
+                    chunk = all_files[chunk_start:chunk_end]
+
+                    # Submit chunk
+                    futures = {}
+                    for f in chunk:
+                        args = (str(f), str(input_dir), settings_dict)
+                        future = executor.submit(_analyze_file_worker, args)
+                        futures[future] = f
+
+                    # Collect results from this chunk
+                    for future in as_completed(futures):
+                        completed += 1
+                        try:
+                            result = future.result()
+                            results.append(result)
+                        except Exception as e:
+                            # Create error result for failed analysis
+                            file_path = futures[future]
+                            error_result = AnalysisResult(
+                                relative_path=str(file_path.relative_to(input_dir)),
+                                file_size=file_path.stat().st_size if file_path.exists() else 0,
+                                error=str(e)
+                            )
+                            results.append(error_result)
+
+                        if progress_callback:
+                            progress_callback(completed, total_files)
+        else:
+            # Sequential analysis (fast DDS parser makes this efficient for non-alpha cases)
+            for i, f in enumerate(all_files, 1):
+                result = _analyze_file_worker((str(f), str(input_dir), settings_dict))
+                results.append(result)
+                if progress_callback:
+                    progress_callback(i, len(all_files))
 
         # Cache results
         self.analysis_cache.clear()

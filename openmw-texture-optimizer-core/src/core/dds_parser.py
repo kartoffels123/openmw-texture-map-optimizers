@@ -14,6 +14,8 @@ import struct
 from pathlib import Path
 from typing import Optional, Tuple
 
+import numpy as np
+
 
 # FourCC codes for pixel formats (from dds.ksy pixel_formats enum)
 FOURCC_NONE = 0x00000000
@@ -398,6 +400,455 @@ def parse_tga_header_extended(filepath: Path) -> Tuple[Optional[Tuple[int, int]]
     return None, "UNKNOWN", 0
 
 
+# =============================================================================
+# Alpha Channel Analysis Functions (Optional - for detecting unused alpha)
+# =============================================================================
+
+def analyze_bc1_alpha(filepath: Path) -> bool:
+    """
+    Check if a BC1/DXT1 texture uses 1-bit alpha (DXT1a mode).
+
+    BC1 block structure (8 bytes per 4x4 block):
+    - 2 bytes: color0 (RGB565)
+    - 2 bytes: color1 (RGB565)
+    - 4 bytes: 2-bit indices for 16 pixels
+
+    If color0 <= color1, the block uses 3-color mode with 1-bit transparency.
+    In this mode, index 3 means transparent black.
+
+    Uses NumPy for fast vectorized analysis.
+
+    Returns:
+        True if any block uses transparency (has meaningful alpha)
+        False if all blocks are opaque (alpha can be ignored)
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read(148)
+            if len(data) < 128:
+                return True
+
+            header = data[4:128]
+            pf_offset = 72
+            pf_fourcc = struct.unpack('<I', header[pf_offset+8:pf_offset+12])[0]
+            header_size = 148 if pf_fourcc == FOURCC_DX10 else 128
+
+            dw_height = struct.unpack('<I', header[8:12])[0]
+            dw_width = struct.unpack('<I', header[12:16])[0]
+
+            blocks_x = (dw_width + 3) // 4
+            blocks_y = (dw_height + 3) // 4
+            total_blocks = blocks_x * blocks_y
+
+            f.seek(header_size)
+            block_data = f.read(total_blocks * 8)
+
+            if len(block_data) < total_blocks * 8:
+                return True
+
+            # Parse as structured array: each block is 8 bytes
+            # color0 (2 bytes), color1 (2 bytes), indices (4 bytes)
+            arr = np.frombuffer(block_data, dtype=np.uint8).reshape(total_blocks, 8)
+
+            # Extract color0 and color1 as uint16 (little-endian)
+            color0 = arr[:, 0].astype(np.uint16) | (arr[:, 1].astype(np.uint16) << 8)
+            color1 = arr[:, 2].astype(np.uint16) | (arr[:, 3].astype(np.uint16) << 8)
+
+            # Find blocks in 3-color mode (transparency mode): color0 <= color1
+            transparent_mode = color0 <= color1
+
+            if not np.any(transparent_mode):
+                return False  # No blocks use transparency mode
+
+            # For blocks in transparent mode, check if any pixel uses index 3
+            # Extract indices as uint32 (4 bytes per block)
+            indices_bytes = arr[:, 4:8]
+            indices_u32 = (indices_bytes[:, 0].astype(np.uint32) |
+                          (indices_bytes[:, 1].astype(np.uint32) << 8) |
+                          (indices_bytes[:, 2].astype(np.uint32) << 16) |
+                          (indices_bytes[:, 3].astype(np.uint32) << 24))
+
+            # Check only blocks in transparent mode
+            for block_idx in np.where(transparent_mode)[0]:
+                indices = indices_u32[block_idx]
+                # Check each of 16 pixels (2 bits each) for index 3
+                for p in range(16):
+                    if ((indices >> (p * 2)) & 0x3) == 3:
+                        return True
+
+            return False
+
+    except Exception:
+        return True
+
+
+def analyze_bc2_alpha(filepath: Path, threshold: int = 255) -> bool:
+    """
+    Check if a BC2/DXT3 texture has meaningful alpha.
+
+    BC2 block structure (16 bytes per 4x4 block):
+    - 8 bytes: explicit 4-bit alpha for each of 16 pixels
+    - 8 bytes: BC1-style color block
+
+    Uses NumPy for fast vectorized analysis.
+
+    Returns:
+        True if any pixel has alpha < threshold (has meaningful alpha)
+        False if all pixels are essentially opaque
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read(148)
+            if len(data) < 128:
+                return True
+
+            header = data[4:128]
+            pf_offset = 72
+            pf_fourcc = struct.unpack('<I', header[pf_offset+8:pf_offset+12])[0]
+            header_size = 148 if pf_fourcc == FOURCC_DX10 else 128
+
+            dw_height = struct.unpack('<I', header[8:12])[0]
+            dw_width = struct.unpack('<I', header[12:16])[0]
+
+            blocks_x = (dw_width + 3) // 4
+            blocks_y = (dw_height + 3) // 4
+            total_blocks = blocks_x * blocks_y
+
+            f.seek(header_size)
+            block_data = f.read(total_blocks * 16)
+
+            if len(block_data) < total_blocks * 16:
+                return True
+
+            # 4-bit threshold (0-15 scale)
+            threshold_4bit = threshold // 16
+
+            # Reshape to extract alpha bytes (first 8 bytes of each 16-byte block)
+            arr = np.frombuffer(block_data, dtype=np.uint8).reshape(total_blocks, 16)
+            alpha_bytes = arr[:, :8].flatten()  # First 8 bytes of each block
+
+            # Extract low and high nibbles (4-bit alpha values)
+            alpha_lo = alpha_bytes & 0x0F
+            alpha_hi = (alpha_bytes >> 4) & 0x0F
+
+            # Check if any 4-bit alpha is below threshold
+            return bool(np.any(alpha_lo < threshold_4bit) or np.any(alpha_hi < threshold_4bit))
+
+    except Exception:
+        return True
+
+
+def analyze_bc3_alpha(filepath: Path, threshold: int = 255) -> bool:
+    """
+    Check if a BC3/DXT5 texture has meaningful alpha.
+
+    BC3 block structure (16 bytes per 4x4 block):
+    - 8 bytes: interpolated alpha block
+      - 1 byte: alpha0
+      - 1 byte: alpha1
+      - 6 bytes: 3-bit indices for 16 pixels
+    - 8 bytes: BC1-style color block
+
+    Uses NumPy for fast vectorized analysis with optimized fast-paths.
+
+    Returns:
+        True if alpha varies meaningfully (has meaningful alpha)
+        False if all pixels are essentially opaque
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read(148)
+            if len(data) < 128:
+                return True
+
+            header = data[4:128]
+            pf_offset = 72
+            pf_fourcc = struct.unpack('<I', header[pf_offset+8:pf_offset+12])[0]
+            header_size = 148 if pf_fourcc == FOURCC_DX10 else 128
+
+            dw_height = struct.unpack('<I', header[8:12])[0]
+            dw_width = struct.unpack('<I', header[12:16])[0]
+
+            blocks_x = (dw_width + 3) // 4
+            blocks_y = (dw_height + 3) // 4
+            total_blocks = blocks_x * blocks_y
+
+            f.seek(header_size)
+            block_data = f.read(total_blocks * 16)
+
+            if len(block_data) < total_blocks * 16:
+                return True
+
+            # Reshape to access block structure
+            arr = np.frombuffer(block_data, dtype=np.uint8).reshape(total_blocks, 16)
+
+            # Extract alpha endpoints (first 2 bytes of each block)
+            alpha0 = arr[:, 0]
+            alpha1 = arr[:, 1]
+
+            # FAST PATH for threshold=255: If both endpoints are 255, all interpolated
+            # values are also 255 (regardless of mode), so the block is fully opaque
+            if threshold == 255:
+                # Any block where either endpoint < 255 could have non-opaque pixels
+                # But we need to be more careful: in 6-value mode, index 6 = 0 (transparent)
+                # So check: if alpha0 <= alpha1 (6-value mode), indices 6 or 7 mean transparency
+
+                # Blocks in 8-value mode (alpha0 > alpha1) with both endpoints = 255 are opaque
+                # Blocks in 6-value mode (alpha0 <= alpha1) could have index 6 (=0) or 7 (=255)
+
+                # Quick check: if all alpha0 and alpha1 are 255, and none use 6-value mode
+                # with index 6, then fully opaque
+                eight_value_mode = alpha0 > alpha1
+                both_255 = (alpha0 == 255) & (alpha1 == 255)
+
+                # If in 8-value mode and both endpoints are 255, block is opaque
+                opaque_8mode = eight_value_mode & both_255
+
+                # For 6-value mode, need to check if index 6 (=0) is used
+                # This requires checking the index data - fallback to per-block check
+                needs_index_check = ~eight_value_mode  # 6-value mode blocks
+
+                if np.all(opaque_8mode | ~needs_index_check):
+                    # All blocks are either opaque 8-mode or we need to check indices
+                    pass
+
+                # For simplicity with threshold=255: if min of all alpha0/alpha1 >= 255
+                # AND no 6-value mode blocks, we're done
+                if np.all(both_255) and np.all(eight_value_mode):
+                    return False  # All blocks opaque
+
+                # Otherwise check if any endpoint < 255
+                if np.any(alpha0 < 255) or np.any(alpha1 < 255):
+                    return True  # Some blocks have non-255 endpoints
+
+                # All endpoints are 255, but some blocks use 6-value mode
+                # In 6-value mode with both endpoints 255: interpolated values are all 255
+                # except index 6 = 0. Need to check if any block uses index 6.
+                six_value_blocks = np.where(~eight_value_mode)[0]
+                if len(six_value_blocks) == 0:
+                    return False  # No 6-value mode blocks
+
+                # Check index data for 6-value mode blocks
+                for block_idx in six_value_blocks:
+                    index_bytes = block_data[block_idx * 16 + 2:block_idx * 16 + 8]
+                    indices = int.from_bytes(index_bytes, 'little')
+                    for p in range(16):
+                        idx = (indices >> (p * 3)) & 0x7
+                        if idx == 6:  # Index 6 = 0 in 6-value mode
+                            return True
+
+                return False  # No transparency found
+
+            # General case: need to compute interpolated values per block
+            # This is slower but handles arbitrary thresholds
+            for i in range(total_blocks):
+                a0 = alpha0[i]
+                a1 = alpha1[i]
+
+                if a0 > a1:
+                    alphas = [a0, a1,
+                              (6 * a0 + 1 * a1) // 7, (5 * a0 + 2 * a1) // 7,
+                              (4 * a0 + 3 * a1) // 7, (3 * a0 + 4 * a1) // 7,
+                              (2 * a0 + 5 * a1) // 7, (1 * a0 + 6 * a1) // 7]
+                else:
+                    alphas = [a0, a1,
+                              (4 * a0 + 1 * a1) // 5, (3 * a0 + 2 * a1) // 5,
+                              (2 * a0 + 3 * a1) // 5, (1 * a0 + 4 * a1) // 5,
+                              0, 255]
+
+                index_bytes = block_data[i * 16 + 2:i * 16 + 8]
+                indices = int.from_bytes(index_bytes, 'little')
+
+                for p in range(16):
+                    idx = (indices >> (p * 3)) & 0x7
+                    if alphas[idx] < threshold:
+                        return True
+
+            return False
+
+    except Exception:
+        return True
+
+
+def analyze_bgra_alpha(filepath: Path, threshold: int = 255) -> bool:
+    """
+    Check if an uncompressed BGRA DDS texture has meaningful alpha.
+
+    Uses NumPy for fast vectorized analysis of alpha channel.
+
+    Returns:
+        True if any pixel has alpha < threshold
+        False if all pixels are essentially opaque
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read(148)
+            if len(data) < 128:
+                return True
+
+            header = data[4:128]
+            pf_offset = 72
+            pf_fourcc = struct.unpack('<I', header[pf_offset+8:pf_offset+12])[0]
+            header_size = 148 if pf_fourcc == FOURCC_DX10 else 128
+
+            dw_height = struct.unpack('<I', header[8:12])[0]
+            dw_width = struct.unpack('<I', header[12:16])[0]
+
+            total_pixels = dw_width * dw_height
+
+            f.seek(header_size)
+
+            # Read all pixel data at once and use NumPy
+            pixel_data = f.read(total_pixels * 4)
+            if len(pixel_data) < total_pixels * 4:
+                return True  # Incomplete file, assume has alpha
+
+            # Convert to numpy array and extract alpha channel (every 4th byte starting at index 3)
+            arr = np.frombuffer(pixel_data, dtype=np.uint8)
+            alpha_channel = arr[3::4]  # Slice: start at 3, step by 4
+
+            # Check if any alpha value is below threshold
+            return bool(np.any(alpha_channel < threshold))
+
+    except Exception:
+        return True
+
+
+def analyze_tga_alpha(filepath: Path, threshold: int = 255) -> bool:
+    """
+    Check if a 32-bit TGA texture has meaningful alpha.
+
+    Uses NumPy for fast vectorized analysis. Supports uncompressed and RLE TGA.
+
+    Returns:
+        True if any pixel has alpha < threshold
+        False if all pixels are essentially opaque (alpha can be ignored)
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            header = f.read(18)
+            if len(header) < 18:
+                return True
+
+            id_length = header[0]
+            colormap_type = header[1]
+            image_type = header[2]
+
+            # Skip if not true-color (uncompressed or RLE)
+            if image_type not in (2, 10):
+                return True
+
+            width = struct.unpack('<H', header[12:14])[0]
+            height = struct.unpack('<H', header[14:16])[0]
+            pixel_depth = header[16]
+
+            # Only analyze 32-bit TGA (has alpha)
+            if pixel_depth != 32:
+                return False  # No alpha channel
+
+            # Skip ID field
+            if id_length > 0:
+                f.read(id_length)
+
+            # Skip colormap
+            if colormap_type == 1:
+                cm_length = struct.unpack('<H', header[5:7])[0]
+                cm_size = header[7]
+                f.read(cm_length * ((cm_size + 7) // 8))
+
+            total_pixels = width * height
+
+            if image_type == 2:  # Uncompressed - fast NumPy path
+                pixel_data = f.read(total_pixels * 4)
+                if len(pixel_data) < total_pixels * 4:
+                    return True
+
+                arr = np.frombuffer(pixel_data, dtype=np.uint8)
+                alpha_channel = arr[3::4]
+                return bool(np.any(alpha_channel < threshold))
+
+            elif image_type == 10:  # RLE compressed - decompress then analyze
+                # Decompress RLE data
+                pixels = []
+                pixels_read = 0
+                while pixels_read < total_pixels:
+                    packet = f.read(1)
+                    if not packet:
+                        break
+
+                    count = (packet[0] & 0x7F) + 1
+                    is_rle = packet[0] & 0x80
+
+                    if is_rle:
+                        pixel = f.read(4)
+                        if len(pixel) < 4:
+                            break
+                        pixels.extend(pixel * count)
+                    else:
+                        raw_data = f.read(count * 4)
+                        if len(raw_data) < count * 4:
+                            break
+                        pixels.extend(raw_data)
+
+                    pixels_read += count
+
+                if pixels:
+                    arr = np.array(pixels, dtype=np.uint8)
+                    alpha_channel = arr[3::4]
+                    return bool(np.any(alpha_channel < threshold))
+
+            return False
+
+    except Exception:
+        return True
+
+
+def has_meaningful_alpha(filepath: Path, format_str: str, threshold: int = 255) -> bool:
+    """
+    Main entry point for alpha analysis.
+
+    Determines the appropriate analysis function based on format and runs it.
+
+    Args:
+        filepath: Path to the texture file
+        format_str: Format string from parse_dds_header (e.g., 'BC1_UNORM', 'BC3_UNORM')
+        threshold: Alpha value below which a pixel is considered "non-opaque" (0-255)
+
+    Returns:
+        True if the texture has meaningful alpha (should use BC3/alpha format)
+        False if alpha is unused (can safely use BC1/no-alpha format)
+    """
+    format_lower = format_str.lower()
+
+    # BC1/DXT1 - check for DXT1a transparency mode
+    if 'bc1' in format_lower or format_str == 'BC1_UNORM':
+        return analyze_bc1_alpha(filepath)
+
+    # BC2/DXT3 - explicit 4-bit alpha
+    if 'bc2' in format_lower or format_str == 'BC2_UNORM':
+        return analyze_bc2_alpha(filepath, threshold)
+
+    # BC3/DXT5 - interpolated alpha
+    if 'bc3' in format_lower or format_str == 'BC3_UNORM':
+        return analyze_bc3_alpha(filepath, threshold)
+
+    # Uncompressed BGRA/RGBA (matches B8G8R8A8_UNORM, R8G8B8A8_UNORM, or normalized 'BGRA'/'RGBA')
+    # Both have alpha at byte offset 3 in each 4-byte pixel
+    if 'b8g8r8a8' in format_lower or 'r8g8b8a8' in format_lower or format_lower in ('bgra', 'rgba'):
+        return analyze_bgra_alpha(filepath, threshold)
+
+    # TGA with alpha
+    if format_str == 'TGA_RGBA':
+        return analyze_tga_alpha(filepath, threshold)
+
+    # For unknown formats with alpha in the name, assume meaningful
+    if 'a' in format_lower or 'alpha' in format_lower:
+        return True
+
+    # No alpha channel in format
+    return False
+
+
 if __name__ == "__main__":
     # Test on local DDS files
     import sys
@@ -418,5 +869,9 @@ if __name__ == "__main__":
         print(f"File: {test_file}")
         print(f"Dimensions: {dims[0]}x{dims[1]}")
         print(f"Format: {fmt}")
+
+        # Test alpha analysis
+        has_alpha = has_meaningful_alpha(test_file, fmt)
+        print(f"Has meaningful alpha: {has_alpha}")
     else:
         print(f"Failed to parse {test_file}")
