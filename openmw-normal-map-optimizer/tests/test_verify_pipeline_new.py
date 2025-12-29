@@ -13,19 +13,49 @@ Or run from GUI:
 
 import sys
 import json
+import importlib.util
 from pathlib import Path
 
-# Add paths for imports
+# Add path for local imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
-core_path = Path(__file__).parent.parent.parent / "openmw-texture-optimizer-core" / "src"
-sys.path.insert(0, str(core_path))
 
-# Import shared test framework
-from tests.test_utils import verify_analysis_vs_output
+# Import shared core modules using same pattern as processor.py
+_shared_core_path = Path(__file__).parent.parent.parent / "openmw-texture-optimizer-core" / "src" / "core"
+
+def _import_shared_module(module_name):
+    """Import a module from the shared core package."""
+    import types
+    full_name = f"shared_core.{module_name}"
+
+    if full_name in sys.modules:
+        return sys.modules[full_name]
+
+    if "shared_core" not in sys.modules:
+        shared_core_pkg = types.ModuleType("shared_core")
+        shared_core_pkg.__path__ = [str(_shared_core_path)]
+        sys.modules["shared_core"] = shared_core_pkg
+
+    spec = importlib.util.spec_from_file_location(
+        full_name,
+        _shared_core_path / f"{module_name}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[full_name] = module
+    spec.loader.exec_module(module)
+    setattr(sys.modules["shared_core"], module_name, module)
+
+    return module
+
+# Import shared test framework and DDS parser from shared core
+_test_utils = _import_shared_module("test_utils")
+_dds_parser = _import_shared_module("dds_parser")
+
+verify_analysis_vs_output = _test_utils.verify_analysis_vs_output
+parse_dds_header = _dds_parser.parse_dds_header
 
 # Import tool-specific components
-from src.core.processor import NormalMapProcessor, ProcessingSettings
-from src.core.dds_parser import parse_dds_header
+from src.core.processor import NormalMapProcessor
+from src.core.normal_settings import NormalSettings as ProcessingSettings
 
 
 def load_settings_from_dict(settings_dict: dict) -> ProcessingSettings:

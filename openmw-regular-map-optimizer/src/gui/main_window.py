@@ -705,6 +705,8 @@ class RegularTextureProcessorGUI:
             input_dir = Path(self.input_dir.get())
 
             self.log("=== Dry Run (Preview) ===\n")
+            self.log("Note: First dry run reads all file headers (may take a minute for large datasets).")
+            self.log("Subsequent runs use cached data and are nearly instant.\n")
             if settings.path_whitelist:
                 self.log(f"Whitelist: {settings.path_whitelist}")
             if settings.path_blacklist:

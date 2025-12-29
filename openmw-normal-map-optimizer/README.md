@@ -118,6 +118,7 @@ These are edge cases mostly relevant to mod authors. If you just want vastly bet
 ### Requirements
 - Python 3.7 or later
 - Windows (for DirectXTex tools)
+- numpy (`pip install numpy`) - for DDS alpha analysis
 
 ### Setup
 1. **Download/Clone** this repository
@@ -143,7 +144,7 @@ openmw-normal-map-optimizer/
 ├── src/
 │   ├── core/
 │   │   ├── processor.py            # Core processing logic
-│   │   └── dds_parser.py           # Fast DDS header parser
+│   │   └── normal_settings.py      # Normal map specific settings
 │   └── gui/
 │       └── main_window.py          # GUI implementation
 ├── tools/                           # DirectXTex executables
@@ -153,6 +154,12 @@ openmw-normal-map-optimizer/
 └── specs/                           # Reference files
     ├── dds.ksy                      # DDS format specification
     └── dds.py                       # Generated parser (reference)
+
+# Shared core (../openmw-texture-optimizer-core/src/core/)
+├── dds_parser.py                    # Fast DDS/TGA header parser
+├── base_settings.py                 # Shared data classes
+├── utils.py                         # Shared utilities
+└── file_scanner.py                  # Path filtering
 ```
 
 ## Version History

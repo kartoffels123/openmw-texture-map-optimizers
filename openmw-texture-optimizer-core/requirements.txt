@@ -1,0 +1,4 @@
+# Shared core dependencies for texture optimizers
+# Both normal map and regular map optimizers require these
+
+numpy>=1.20.0  # Used for alpha channel analysis in DDS/TGA parsing

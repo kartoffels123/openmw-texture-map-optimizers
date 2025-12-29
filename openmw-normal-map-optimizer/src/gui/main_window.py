@@ -1034,12 +1034,9 @@ class NormalMapProcessorGUI:
             input_dir = Path(self.input_dir.get())
             self.log("=== Dry Run (Preview) ===\n")
 
-            # Log analysis mode for debugging
-            from src.core.processor import _HAS_FAST_PARSER
-            if _HAS_FAST_PARSER:
-                self.log("Using fast sequential analysis (DDS header parser)")
-            else:
-                self.log("Using texdiag-based analysis")
+            # Log analysis mode info
+            self.log("Note: First dry run reads all file headers (may take a minute for large datasets).")
+            self.log("Subsequent runs use cached data and are nearly instant.\n")
 
             # Define progress callback
             def progress_callback(current, total):

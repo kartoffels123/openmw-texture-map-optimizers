@@ -1,86 +1,98 @@
 """
 Core logic for OpenMW Regular Texture Optimizer.
 Handles file processing, analysis, and conversion for regular (non-normal map) textures.
+
+This module uses the shared core from openmw-texture-optimizer-core.
 """
 
 from pathlib import Path
 import subprocess
 import shutil
-import math
+import json
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from multiprocessing import cpu_count
-from dataclasses import dataclass
 from typing import Optional, Tuple, List, Dict, Callable
 import sys
+import importlib.util
 
-# Get the directory where the tools are located
-if hasattr(sys, 'frozen'):
-    SCRIPT_DIR = Path(sys.executable).parent
-else:
-    SCRIPT_DIR = Path(__file__).parent.parent.parent  # Go up to project root
+# =============================================================================
+# Shared Core Import
+# =============================================================================
+# Use importlib to avoid name collision with local 'core' package
+# Register modules in sys.modules so they can be pickled for multiprocessing
 
-TEXDIAG_EXE = str(SCRIPT_DIR / "tools" / "texdiag.exe")
-TEXCONV_EXE = str(SCRIPT_DIR / "tools" / "texconv.exe")
-CUTTLEFISH_EXE = str(SCRIPT_DIR / "tools" / "cuttlefish.exe")
+_shared_core_path = Path(__file__).parent.parent.parent.parent / "openmw-texture-optimizer-core" / "src" / "core"
 
-# Add core package to path
-core_path = Path(__file__).parent.parent.parent.parent / "openmw-texture-optimizer-core" / "src"
-if str(core_path) not in sys.path:
-    sys.path.insert(0, str(core_path))
+def _import_shared_module(module_name):
+    """Import a module from the shared core package and register in sys.modules."""
+    import types
+    full_name = f"shared_core.{module_name}"
 
-# Import from shared core
-from core.dds_parser import (
-    parse_dds_header,
-    parse_dds_header_extended,
-    has_adequate_mipmaps,
-    parse_tga_header,
-    parse_tga_header_extended,
-    has_meaningful_alpha,
-    analyze_bc1_alpha,
-)
-from core.file_scanner import FileScanner
-from core.utils import format_size, format_time, FORMAT_MAP, FILTER_MAP
+    # Return existing module if already imported
+    if full_name in sys.modules:
+        return sys.modules[full_name]
 
+    # Ensure parent package exists in sys.modules
+    if "shared_core" not in sys.modules:
+        shared_core_pkg = types.ModuleType("shared_core")
+        shared_core_pkg.__path__ = [str(_shared_core_path)]
+        sys.modules["shared_core"] = shared_core_pkg
 
-@dataclass
-class ProcessingResult:
-    """Result from processing a single file"""
-    success: bool
-    relative_path: str
-    input_size: int
-    output_size: int = 0
-    orig_dims: Optional[Tuple[int, int]] = None
-    new_dims: Optional[Tuple[int, int]] = None
-    orig_format: str = 'UNKNOWN'
-    new_format: str = 'UNKNOWN'
-    error_msg: Optional[str] = None
+    spec = importlib.util.spec_from_file_location(
+        full_name,
+        _shared_core_path / f"{module_name}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
 
+    # Register in sys.modules BEFORE executing (handles circular imports)
+    sys.modules[full_name] = module
+    spec.loader.exec_module(module)
 
-@dataclass
-class AnalysisResult:
-    """Result from analyzing a single file"""
-    relative_path: str
-    file_size: int
-    width: Optional[int] = None
-    height: Optional[int] = None
-    format: str = 'UNKNOWN'
-    mipmap_count: int = 0
-    new_width: Optional[int] = None
-    new_height: Optional[int] = None
-    target_format: Optional[str] = None
-    projected_size: int = 0
-    error: Optional[str] = None
-    warnings: List[str] = None
-    is_passthrough: bool = False
-    has_alpha: bool = False
-    # Alpha optimization tracking
-    alpha_optimized: bool = False  # True if alpha was detected as unused and optimized away
-    original_format: str = None  # Original format before alpha optimization (e.g., BC3/DXT5 -> BC1/DXT1)
-    has_dxt1a: bool = False  # True if BC1/DXT1 uses 1-bit alpha (DXT1a mode)
+    # Also set as attribute on parent package
+    setattr(sys.modules["shared_core"], module_name, module)
 
-    def __post_init__(self):
-        if self.warnings is None:
-            self.warnings = []
+    return module
+
+# Import shared core modules
+_dds_parser = _import_shared_module("dds_parser")
+_file_scanner = _import_shared_module("file_scanner")
+_base_settings = _import_shared_module("base_settings")
+_utils = _import_shared_module("utils")
+
+# Re-export DDS parser functions
+parse_dds_header = _dds_parser.parse_dds_header
+parse_dds_header_extended = _dds_parser.parse_dds_header_extended
+has_adequate_mipmaps = _dds_parser.has_adequate_mipmaps
+parse_tga_header = _dds_parser.parse_tga_header
+parse_tga_header_extended = _dds_parser.parse_tga_header_extended
+has_meaningful_alpha = _dds_parser.has_meaningful_alpha
+analyze_bc1_alpha = _dds_parser.analyze_bc1_alpha
+
+# Re-export file scanner
+FileScanner = _file_scanner.FileScanner
+
+# Re-export base settings
+ProcessingResult = _base_settings.ProcessingResult
+AnalysisResult = _base_settings.AnalysisResult
+
+# Re-export utils
+format_size = _utils.format_size
+format_time = _utils.format_time
+normalize_format = _utils.normalize_format
+get_tool_paths = _utils.get_tool_paths
+is_texture_atlas = _utils.is_texture_atlas
+calculate_new_dimensions = _utils.calculate_new_dimensions
+FORMAT_MAP = _utils.FORMAT_MAP
+FILTER_MAP = _utils.FILTER_MAP
+
+# Get tool paths - pass the optimizer's root directory
+# This file is at: openmw-regular-map-optimizer/src/core/regular_processor.py
+# Tools are at: openmw-regular-map-optimizer/tools/
+_optimizer_root = Path(__file__).parent.parent.parent
+_TEXCONV_EXE, _TEXDIAG_EXE, _CUTTLEFISH_EXE = get_tool_paths(_optimizer_root)
+TEXCONV_EXE = _TEXCONV_EXE
+TEXDIAG_EXE = _TEXDIAG_EXE
+CUTTLEFISH_EXE = _CUTTLEFISH_EXE if _CUTTLEFISH_EXE else ""
 
 
 # Format mapping for regular textures (no BC5)
@@ -119,22 +131,6 @@ ALPHA_FORMATS = ["BC2/DXT3", "BC3/DXT5", "BGRA", "RGBA"]
 NO_ALPHA_FORMATS = ["BC1/DXT1", "BGR", "RGB"]
 
 
-def _normalize_format(fmt: str) -> str:
-    """Normalize format names for comparison"""
-    format_map = {
-        'BC5_UNORM': 'BC5/ATI2',
-        'BC3_UNORM': 'BC3/DXT5',
-        'BC2_UNORM': 'BC2/DXT3',
-        'BC1_UNORM': 'BC1/DXT1',
-        'B8G8R8A8_UNORM': 'BGRA',
-        'R8G8B8A8_UNORM': 'RGBA',
-        'B8G8R8X8_UNORM': 'BGR',
-        'B8G8R8_UNORM': 'BGR',
-        'R8G8B8_UNORM': 'RGB',
-    }
-    return format_map.get(fmt, fmt)
-
-
 def _is_well_compressed(format_str: str, mipmap_count: int, width: int, height: int) -> bool:
     """
     Check if a texture is "well compressed" and can be passed through.
@@ -143,7 +139,7 @@ def _is_well_compressed(format_str: str, mipmap_count: int, width: int, height: 
     - Is in BC1, BC2, or BC3 format
     - Has adequate mipmaps (more than just base level for textures > 4x4)
     """
-    normalized = _normalize_format(format_str)
+    normalized = normalize_format(format_str)
 
     # Must be a compressed format
     if normalized not in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']:
@@ -166,20 +162,10 @@ def _has_alpha_channel(format_str: str) -> bool:
         return True
     if format_str in ('TGA_RGB', 'TGA'):
         return False
-    normalized = _normalize_format(format_str)
+    normalized = normalize_format(format_str)
     # BC1/DXT1 might have 1-bit alpha (DXT1a) but we can't detect without scanning blocks
     # For passthrough, we treat BC1 as "handled" - don't upgrade to BC3
     return normalized in ['BC3/DXT5', 'BC2/DXT3', 'BGRA', 'RGBA']
-
-
-def _is_texture_atlas(file_path: Path) -> bool:
-    """Detect if a file is likely a texture atlas"""
-    if 'atlas' in file_path.stem.lower():
-        return True
-    path_parts = [p.lower() for p in file_path.parts]
-    if 'atl' in path_parts:
-        return True
-    return False
 
 
 def _matches_pattern(file_path: Path, patterns: list) -> bool:
@@ -226,49 +212,6 @@ def _should_skip_mipmaps(file_path: Path, settings: dict) -> bool:
     """Check if mipmaps should be skipped for this file."""
     no_mipmap_paths = settings.get('no_mipmap_paths', [])
     return _matches_pattern(file_path, no_mipmap_paths)
-
-
-def _calculate_new_dimensions(orig_width: int, orig_height: int, settings: dict,
-                              file_path: Path = None, is_atlas: bool = False) -> Tuple[int, int]:
-    """Calculate new dimensions based on scale factor and constraints"""
-    if orig_width <= 0 or orig_height <= 0:
-        raise ValueError(f"Invalid texture dimensions: {orig_width}x{orig_height}")
-
-    new_width, new_height = orig_width, orig_height
-
-    if not is_atlas and file_path:
-        is_atlas = _is_texture_atlas(file_path)
-
-    # Skip resizing for texture atlases unless enabled
-    if is_atlas and not settings.get('enable_atlas_downscaling', False):
-        return new_width, new_height
-
-    scale = settings['scale_factor']
-    min_res = settings['min_resolution']
-
-    if scale != 1.0:
-        new_width = int(orig_width * scale)
-        new_height = int(orig_height * scale)
-
-        if scale < 1.0 and min_res > 0:
-            if new_width < min_res or new_height < min_res:
-                new_width = orig_width
-                new_height = orig_height
-
-        new_width = max(1, new_width)
-        new_height = max(1, new_height)
-
-    max_res = settings.get('atlas_max_resolution', 4096) if is_atlas else settings['max_resolution']
-    if max_res > 0:
-        max_dim = max(new_width, new_height)
-        if max_dim > max_res and max_dim > 0:
-            scale_factor = max_res / max_dim
-            new_width = int(new_width * scale_factor)
-            new_height = int(new_height * scale_factor)
-            new_width = max(1, new_width)
-            new_height = max(1, new_height)
-
-    return new_width, new_height
 
 
 def _process_texture_with_texconv(input_path: Path, output_path: Path, target_format: str,
@@ -326,79 +269,109 @@ def _process_texture_with_texconv(input_path: Path, output_path: Path, target_fo
         return False, f"Exception: {str(e)}"
 
 
-def _process_texture_static(input_path: Path, output_path: Path, settings: dict) -> Tuple[bool, Optional[str]]:
+def _process_texture_static(input_path: Path, output_path: Path, settings: dict,
+                            cached_analysis: dict = None) -> Tuple[bool, Optional[str]]:
     """
     Process a single texture file.
 
     Uses cuttlefish for BC compression (better PSNR, 2-5 dB higher than texconv).
     Falls back to texconv for BGR (24-bit) small textures since cuttlefish can't write 24-bit DDS.
 
-    Decision Priority Order (matches _analyze_file_worker):
-    1. Compressed (BC1/BC2/BC3): passthrough if valid, else reprocess keeping format
-    2. Uncompressed: small -> BGR/BGRA, normal -> BC1/BC3 based on alpha
+    If cached_analysis is provided (from analyze_files), uses the pre-computed target_format
+    to ensure processing matches the analysis predictions. This is critical for alpha
+    optimization where analysis detects unused alpha and selects BC1 instead of BC3.
     """
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # === STEP 0: Parse file header ===
-        if input_path.suffix.lower() == '.tga':
-            dimensions, format_name, mipmap_count = parse_tga_header_extended(input_path)
-            if not dimensions:
-                return False, "Could not parse TGA header"
-            has_alpha = (format_name == 'TGA_RGBA')
+        # === Use cached analysis if available ===
+        if cached_analysis and 'target_format' in cached_analysis:
+            # Use pre-computed values from analysis
+            orig_width = cached_analysis['width']
+            orig_height = cached_analysis['height']
+            format_name = cached_analysis['format']
+            target_format = cached_analysis['target_format']
+            mipmap_count = cached_analysis.get('mipmap_count', 0)
 
-            # Optional: Check if TGA alpha is actually used
-            optimize_alpha = settings.get('optimize_unused_alpha', False)
-            if optimize_alpha and has_alpha:
-                alpha_threshold = settings.get('alpha_threshold', 250)
-                actually_has_alpha = has_meaningful_alpha(input_path, format_name, alpha_threshold)
-                if not actually_has_alpha:
-                    has_alpha = False
-        else:
-            dimensions, format_name, mipmap_count = parse_dds_header_extended(input_path)
-            if not dimensions:
-                return False, "Could not parse DDS header"
-            format_name = _normalize_format(format_name)
-            has_alpha = _has_alpha_channel(format_name)
+            # Use pre-computed dimensions from analysis to ensure consistency
+            new_width = cached_analysis.get('new_width', orig_width)
+            new_height = cached_analysis.get('new_height', orig_height)
+            will_resize = (new_width != orig_width) or (new_height != orig_height)
 
-        # Optional: Check if alpha is actually used (not just declared in format)
-        optimize_alpha = settings.get('optimize_unused_alpha', False)
-        if optimize_alpha and has_alpha:
-            alpha_threshold = settings.get('alpha_threshold', 250)
-            actually_has_alpha = has_meaningful_alpha(input_path, format_name, alpha_threshold)
-            if not actually_has_alpha:
-                has_alpha = False
+            # Check if this is a passthrough case
+            is_compressed = format_name in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']
+            has_valid_mipmaps = _is_well_compressed(format_name, mipmap_count, orig_width, orig_height)
 
-        orig_width, orig_height = dimensions
-        new_width, new_height = _calculate_new_dimensions(orig_width, orig_height, settings, input_path)
-        will_resize = (new_width != orig_width) or (new_height != orig_height)
-
-        # === STEP 1: Handle compressed textures (BC1/BC2/BC3) ===
-        is_compressed = format_name in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']
-        has_valid_mipmaps = _is_well_compressed(format_name, mipmap_count, orig_width, orig_height)
-
-        if is_compressed:
-            if not will_resize and has_valid_mipmaps:
-                # Passthrough: copy as-is if enabled
+            # Passthrough: compressed texture that doesn't need changes
+            if is_compressed and not will_resize and has_valid_mipmaps and target_format == format_name:
                 if settings.get('copy_passthrough_files', True):
                     shutil.copy2(input_path, output_path)
                 return True, None
-            else:
-                # Reprocess but keep same format
-                target_format = format_name
 
-        # === STEP 2: Handle uncompressed textures ===
+            # A8 format passthrough - rare specialty texture, copy as-is
+            if target_format in ('A8_UNORM', 'A8'):
+                if settings.get('copy_passthrough_files', True):
+                    shutil.copy2(input_path, output_path)
+                return True, None
+
         else:
-            small_threshold = settings.get('small_texture_threshold', 128)
-            use_small_override = settings.get('use_small_texture_override', True)
-            min_dim = min(new_width, new_height)
+            # === Fallback: Parse file header if no cached analysis ===
+            if input_path.suffix.lower() == '.tga':
+                dimensions, format_name, mipmap_count = parse_tga_header_extended(input_path)
+                if not dimensions:
+                    return False, "Could not parse TGA header"
+                has_alpha = (format_name == 'TGA_RGBA')
 
-            if use_small_override and small_threshold > 0 and min_dim <= small_threshold:
-                # Small texture: keep uncompressed
-                target_format = "BGRA" if has_alpha else "BGR"
+                # Optional: Check if TGA alpha is actually used
+                optimize_alpha = settings.get('optimize_unused_alpha', False)
+                if optimize_alpha and has_alpha:
+                    alpha_threshold = settings.get('alpha_threshold', 255)
+                    actually_has_alpha = has_meaningful_alpha(input_path, format_name, alpha_threshold)
+                    if not actually_has_alpha:
+                        has_alpha = False
             else:
-                # Normal size: compress based on alpha
-                target_format = 'BC3/DXT5' if has_alpha else 'BC1/DXT1'
+                dimensions, format_name, mipmap_count = parse_dds_header_extended(input_path)
+                if not dimensions:
+                    return False, "Could not parse DDS header"
+                format_name = normalize_format(format_name)
+                has_alpha = _has_alpha_channel(format_name)
+
+            # Optional: Check if alpha is actually used (not just declared in format)
+            optimize_alpha = settings.get('optimize_unused_alpha', False)
+            if optimize_alpha and has_alpha:
+                alpha_threshold = settings.get('alpha_threshold', 255)
+                actually_has_alpha = has_meaningful_alpha(input_path, format_name, alpha_threshold)
+                if not actually_has_alpha:
+                    has_alpha = False
+
+            orig_width, orig_height = dimensions
+            new_width, new_height = calculate_new_dimensions(orig_width, orig_height, settings, input_path)
+            will_resize = (new_width != orig_width) or (new_height != orig_height)
+
+            # === Determine target format (fallback logic) ===
+            is_compressed = format_name in ['BC1/DXT1', 'BC2/DXT3', 'BC3/DXT5']
+            has_valid_mipmaps = _is_well_compressed(format_name, mipmap_count, orig_width, orig_height)
+
+            if is_compressed:
+                if not will_resize and has_valid_mipmaps:
+                    # Passthrough: copy as-is if enabled
+                    if settings.get('copy_passthrough_files', True):
+                        shutil.copy2(input_path, output_path)
+                    return True, None
+                else:
+                    # Reprocess but keep same format
+                    target_format = format_name
+            else:
+                small_threshold = settings.get('small_texture_threshold', 128)
+                use_small_override = settings.get('use_small_texture_override', True)
+                min_dim = min(new_width, new_height)
+
+                if use_small_override and small_threshold > 0 and min_dim <= small_threshold:
+                    # Small texture: keep uncompressed
+                    target_format = "BGRA" if has_alpha else "BGR"
+                else:
+                    # Normal size: compress based on alpha
+                    target_format = 'BC3/DXT5' if has_alpha else 'BC1/DXT1'
 
         # Check if mipmaps should be skipped for this file
         skip_mipmaps = _should_skip_mipmaps(input_path, settings)
@@ -481,7 +454,8 @@ def _process_file_worker(args):
             result.orig_dims = dims
             result.orig_format = fmt
 
-        success, error_detail = _process_texture_static(input_file, output_file, settings)
+        # Pass cached analysis to processing function so it uses pre-computed target format
+        success, error_detail = _process_texture_static(input_file, output_file, settings, cached_analysis)
 
         if success and output_file.exists():
             result.success = True
@@ -540,8 +514,19 @@ def _analyze_file_worker(args):
                 result.error = "Could not determine dimensions"
                 return result
             result.width, result.height = dimensions
-            result.format = _normalize_format(format_name)
+            result.format = normalize_format(format_name)
             result.mipmap_count = mipmap_count
+
+        # === Handle special formats that should passthrough ===
+        # A8 textures are rare specialty textures (alpha-only), passthrough as-is
+        if result.format == 'A8_UNORM' or result.format == 'A8':
+            result.is_passthrough = True
+            result.target_format = result.format
+            result.new_width = result.width
+            result.new_height = result.height
+            result.projected_size = file_size
+            result.warnings.append("A8 format (alpha-only) - passthrough")
+            return result
 
         # Determine if source has alpha
         result.has_alpha = _has_alpha_channel(result.format)
@@ -569,8 +554,8 @@ def _analyze_file_worker(args):
                 # Note: actual target format determined later (BC1 for normal size, BGR for small)
 
         # Calculate new dimensions (handles atlas protection, max/min resolution)
-        is_atlas = _is_texture_atlas(input_file)
-        new_width, new_height = _calculate_new_dimensions(
+        is_atlas = is_texture_atlas(input_file)
+        new_width, new_height = calculate_new_dimensions(
             result.width, result.height, settings, is_atlas=is_atlas
         )
         result.new_width = new_width
@@ -696,11 +681,13 @@ class RegularTextureProcessor:
                 'excluded_normal_maps': 0,
                 'excluded_whitelist': 0,
                 'excluded_blacklist': 0,
+                'excluded_tga_duplicates': 0,  # DDS files skipped because TGA exists
                 'blacklist_examples': [],
                 'whitelist_examples': [],
                 # Full lists for export
                 'normal_map_files': [],
                 'blacklist_files': [],
+                'tga_duplicate_files': [],  # DDS files that were skipped for TGA
             }
 
         exclude_normal = getattr(self.settings, 'exclude_normal_maps', True)
@@ -714,13 +701,29 @@ class RegularTextureProcessor:
 
         # Find all TGA files if enabled
         all_tga = []
+        tga_stems = set()  # Track TGA stems to skip duplicate DDS files
         if hasattr(self.settings, 'enable_tga_support') and self.settings.enable_tga_support:
             all_tga = list(input_dir.rglob("*.tga"))
+            # Build set of (parent_dir, stem) tuples for TGA files
+            tga_stems = {(f.parent, f.stem.lower()) for f in all_tga}
 
-        all_textures = all_dds + all_tga
+        # Filter DDS files - skip if TGA with same stem exists in same directory
+        # TGA is preferred as it's typically higher quality (lossless source)
+        filtered_dds = []
+        for dds_file in all_dds:
+            key = (dds_file.parent, dds_file.stem.lower())
+            if key in tga_stems:
+                if track_filtered:
+                    self.filter_stats['excluded_tga_duplicates'] += 1
+                    self.filter_stats['tga_duplicate_files'].append(str(dds_file.relative_to(input_dir)))
+                continue  # Skip DDS, TGA takes priority
+            filtered_dds.append(dds_file)
+
+        all_textures = filtered_dds + all_tga
 
         if track_filtered:
-            self.filter_stats['total_textures_found'] = len(all_textures)
+            # Total includes all found files before TGA deduplication
+            self.filter_stats['total_textures_found'] = len(all_dds) + len(all_tga)
 
         # Filter in a single pass
         for f in all_textures:
@@ -911,8 +914,12 @@ class RegularTextureProcessor:
             return {
                 'width': result.width,
                 'height': result.height,
+                'new_width': result.new_width,
+                'new_height': result.new_height,
                 'format': result.format,
                 'target_format': result.target_format,
-                'mipmap_count': result.mipmap_count
+                'mipmap_count': result.mipmap_count,
+                'alpha_optimized': result.alpha_optimized,
+                'is_passthrough': result.is_passthrough,
             }
         return None

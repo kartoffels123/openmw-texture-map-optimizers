@@ -16,6 +16,7 @@ Optimize and compress regular (non-normal map) textures for OpenMW.
 
 - Python 3.7+
 - Windows (for texconv/texdiag tools)
+- numpy (`pip install numpy`) - for DDS alpha analysis
 
 ## Usage
 

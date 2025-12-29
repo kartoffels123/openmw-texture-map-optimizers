@@ -1,16 +1,50 @@
 """Regular texture specific settings"""
 
-import sys
 from pathlib import Path
 from dataclasses import dataclass
-from multiprocessing import cpu_count
+import importlib.util
+import sys
 
-# Add core package to path
-core_path = Path(__file__).parent.parent.parent.parent / "openmw-texture-optimizer-core" / "src"
-if str(core_path) not in sys.path:
-    sys.path.insert(0, str(core_path))
+# =============================================================================
+# Shared Core Import
+# =============================================================================
+# Use importlib to avoid name collision with local 'core' package
+# Register modules in sys.modules so they can be pickled for multiprocessing
 
-from core.base_settings import BaseProcessingSettings
+_shared_core_path = Path(__file__).parent.parent.parent.parent / "openmw-texture-optimizer-core" / "src" / "core"
+
+def _import_shared_module(module_name):
+    """Import a module from the shared core package and register in sys.modules."""
+    import types
+    full_name = f"shared_core.{module_name}"
+
+    # Return existing module if already imported
+    if full_name in sys.modules:
+        return sys.modules[full_name]
+
+    # Ensure parent package exists in sys.modules
+    if "shared_core" not in sys.modules:
+        shared_core_pkg = types.ModuleType("shared_core")
+        shared_core_pkg.__path__ = [str(_shared_core_path)]
+        sys.modules["shared_core"] = shared_core_pkg
+
+    spec = importlib.util.spec_from_file_location(
+        full_name,
+        _shared_core_path / f"{module_name}.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+
+    # Register in sys.modules BEFORE executing (handles circular imports)
+    sys.modules[full_name] = module
+    spec.loader.exec_module(module)
+
+    # Also set as attribute on parent package
+    setattr(sys.modules["shared_core"], module_name, module)
+
+    return module
+
+_base_settings = _import_shared_module("base_settings")
+BaseProcessingSettings = _base_settings.BaseProcessingSettings
 
 
 # Default paths to exclude entirely (UI elements, special files)

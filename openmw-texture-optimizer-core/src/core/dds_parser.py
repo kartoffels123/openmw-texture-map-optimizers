@@ -6,7 +6,9 @@ Only reads the header (first ~148 bytes) for width, height, and format.
 Supported formats:
 - Legacy FourCC: DXT1/DXT3/DXT5, ATI1/ATI2, BC4U/BC4S/BC5U
 - DX10 extended header: All DXGI formats (BC1-BC7, RGBA, float formats, etc.)
-- Uncompressed: BGRA, BGRX, BGR
+- Uncompressed 32-bit: BGRA, BGRX
+- Uncompressed 24-bit: BGR
+- Uncompressed 16-bit: B5G6R5 (RGB565), B5G5R5A1, B4G4R4A4
 - ~100x faster than spawning texdiag subprocess
 """
 
@@ -15,6 +17,40 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
+
+# =============================================================================
+# Parser Statistics (for tracking fast parser vs fallback usage)
+# =============================================================================
+_fast_parser_hits = 0
+_texdiag_fallbacks = 0
+
+
+def get_parser_stats() -> Tuple[int, int]:
+    """Get parser statistics.
+
+    Returns:
+        (fast_parser_hits, texdiag_fallbacks)
+    """
+    return _fast_parser_hits, _texdiag_fallbacks
+
+
+def reset_parser_stats():
+    """Reset parser statistics to zero."""
+    global _fast_parser_hits, _texdiag_fallbacks
+    _fast_parser_hits = 0
+    _texdiag_fallbacks = 0
+
+
+def _increment_fast_parser_hits():
+    """Increment the fast parser hit counter."""
+    global _fast_parser_hits
+    _fast_parser_hits += 1
+
+
+def _increment_texdiag_fallbacks():
+    """Increment the texdiag fallback counter."""
+    global _texdiag_fallbacks
+    _texdiag_fallbacks += 1
 
 
 # FourCC codes for pixel formats (from dds.ksy pixel_formats enum)
@@ -193,6 +229,25 @@ def parse_dds_header(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str]:
                         format_str = 'B8G8R8X8_UNORM'
                 elif pf_rgb_bitcount == 24:
                     format_str = 'B8G8R8_UNORM'
+                elif pf_rgb_bitcount == 16:
+                    # 16-bit formats - check bitmasks to determine exact format
+                    pf_r_mask = struct.unpack('<I', header[pf_offset+16:pf_offset+20])[0]
+                    pf_g_mask = struct.unpack('<I', header[pf_offset+20:pf_offset+24])[0]
+                    pf_b_mask = struct.unpack('<I', header[pf_offset+24:pf_offset+28])[0]
+                    pf_a_mask = struct.unpack('<I', header[pf_offset+28:pf_offset+32])[0]
+
+                    # B5G6R5 (RGB565) - red=0xF800, green=0x07E0, blue=0x001F
+                    if pf_r_mask == 0xF800 and pf_g_mask == 0x07E0 and pf_b_mask == 0x001F:
+                        format_str = 'B5G6R5_UNORM'
+                    # B5G5R5A1 - red=0x7C00, green=0x03E0, blue=0x001F, alpha=0x8000
+                    elif pf_r_mask == 0x7C00 and pf_g_mask == 0x03E0 and pf_b_mask == 0x001F:
+                        format_str = 'B5G5R5A1_UNORM'
+                    # B4G4R4A4 - red=0x0F00, green=0x00F0, blue=0x000F, alpha=0xF000
+                    elif pf_r_mask == 0x0F00 and pf_g_mask == 0x00F0 and pf_b_mask == 0x000F:
+                        format_str = 'B4G4R4A4_UNORM'
+                    else:
+                        # Generic 16-bit format
+                        format_str = 'RGB16_UNORM'
 
             return (dw_width, dw_height), format_str
 
@@ -295,6 +350,25 @@ def parse_dds_header_extended(filepath: Path) -> Tuple[Optional[Tuple[int, int]]
                         format_str = 'B8G8R8X8_UNORM'
                 elif pf_rgb_bitcount == 24:
                     format_str = 'B8G8R8_UNORM'
+                elif pf_rgb_bitcount == 16:
+                    # 16-bit formats - check bitmasks to determine exact format
+                    pf_r_mask = struct.unpack('<I', header[pf_offset+16:pf_offset+20])[0]
+                    pf_g_mask = struct.unpack('<I', header[pf_offset+20:pf_offset+24])[0]
+                    pf_b_mask = struct.unpack('<I', header[pf_offset+24:pf_offset+28])[0]
+                    pf_a_mask = struct.unpack('<I', header[pf_offset+28:pf_offset+32])[0]
+
+                    # B5G6R5 (RGB565) - red=0xF800, green=0x07E0, blue=0x001F
+                    if pf_r_mask == 0xF800 and pf_g_mask == 0x07E0 and pf_b_mask == 0x001F:
+                        format_str = 'B5G6R5_UNORM'
+                    # B5G5R5A1 - red=0x7C00, green=0x03E0, blue=0x001F, alpha=0x8000
+                    elif pf_r_mask == 0x7C00 and pf_g_mask == 0x03E0 and pf_b_mask == 0x001F:
+                        format_str = 'B5G5R5A1_UNORM'
+                    # B4G4R4A4 - red=0x0F00, green=0x00F0, blue=0x000F, alpha=0xF000
+                    elif pf_r_mask == 0x0F00 and pf_g_mask == 0x00F0 and pf_b_mask == 0x000F:
+                        format_str = 'B4G4R4A4_UNORM'
+                    else:
+                        # Generic 16-bit format
+                        format_str = 'RGB16_UNORM'
 
             return (dw_width, dw_height), format_str, dw_mipmap_count
 
