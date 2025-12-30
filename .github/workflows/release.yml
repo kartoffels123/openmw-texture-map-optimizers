@@ -1,9 +1,9 @@
-name: Release Normal Map Optimizer
+name: Release OpenMW Texture Optimizers
 
 on:
   push:
     tags:
-      - 'normal-v*'
+      - 'v*'
 
 jobs:
   build:
@@ -15,7 +15,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create release archive
+      - name: Create Normal Map Optimizer archive
         run: |
           cd openmw-normal-map-optimizer
           zip -r ../openmw-normal-map-optimizer.zip \
@@ -24,15 +24,49 @@ jobs:
             "OpenMW Normal Map Optimizer.bat" \
             src/ \
             tools/
-          # Bundle core package
+          # Bundle shared core package
           cd ..
           zip -ur openmw-normal-map-optimizer.zip \
+            openmw-texture-optimizer-core/src/
+
+      - name: Create Regular Texture Optimizer archive
+        run: |
+          cd openmw-regular-map-optimizer
+          zip -r ../openmw-regular-map-optimizer.zip \
+            optimizer.py \
+            README.md \
+            "OpenMW Regular Map Optimizer.bat" \
+            src/ \
+            tools/
+          # Bundle shared core package
+          cd ..
+          zip -ur openmw-regular-map-optimizer.zip \
             openmw-texture-optimizer-core/src/
 
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
-          files: openmw-normal-map-optimizer.zip
-          generate_release_notes: true
+          files: |
+            openmw-normal-map-optimizer.zip
+            openmw-regular-map-optimizer.zip
+          body: |
+            ## OpenMW Texture Optimizers Release
+
+            This release includes:
+            - **Normal Map Optimizer v0.10** - For optimizing `_N.dds` and `_NH.dds` normal maps
+            - **Regular Texture Optimizer v0.1** - For optimizing all other textures (DDS and TGA)
+
+            Both tools share the same core library for consistency.
+
+            ### Download
+            - `openmw-normal-map-optimizer.zip` - Normal map optimizer with all dependencies
+            - `openmw-regular-map-optimizer.zip` - Regular texture optimizer with all dependencies
+
+            ### Quick Start
+            1. Extract the zip file
+            2. Double-click the `.bat` file to launch
+            3. Configure input/output directories
+            4. Run a Dry Run to preview changes
+            5. Process files when ready
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
