@@ -69,6 +69,9 @@ class NormalSettings(BaseProcessingSettings):
     auto_optimize_n_alpha: bool = True
     allow_compressed_passthrough: bool = False
 
+    # Passthrough output control
+    copy_passthrough_files: bool = False  # Copy well-compressed files to output (vs skip them)
+
     # Override defaults from base
     uniform_weighting: bool = True  # Default ON for normal maps
 
@@ -87,5 +90,6 @@ class NormalSettings(BaseProcessingSettings):
             'auto_fix_nh_to_n': self.auto_fix_nh_to_n,
             'auto_optimize_n_alpha': self.auto_optimize_n_alpha,
             'allow_compressed_passthrough': self.allow_compressed_passthrough,
+            'copy_passthrough_files': self.copy_passthrough_files,
         })
         return base_dict

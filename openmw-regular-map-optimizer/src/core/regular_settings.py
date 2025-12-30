@@ -89,7 +89,7 @@ class RegularSettings(BaseProcessingSettings):
     custom_blacklist: list = None  # User-added blacklist entries
 
     # Passthrough output control
-    copy_passthrough_files: bool = True  # Copy well-compressed files to output (vs skip them)
+    copy_passthrough_files: bool = False  # Copy well-compressed files to output (vs skip them)
 
     # No-mipmap paths (process but skip mipmap generation)
     no_mipmap_paths: list = None  # Default: UI elements displayed at 1:1
@@ -100,10 +100,12 @@ class RegularSettings(BaseProcessingSettings):
     # File format support
     enable_tga_support: bool = True
 
-    # Alpha optimization (optional, more aggressive compression)
-    # When enabled, analyzes alpha channels to detect unused alpha
-    # Textures with format-declared alpha but all-opaque pixels can be compressed to BC1
-    optimize_unused_alpha: bool = False  # Default OFF - optional feature
+    # Alpha optimization (RECOMMENDED - enabled by default)
+    # When enabled, analyzes alpha channels to detect:
+    # 1. Unused alpha: Textures with format-declared alpha but all-opaque pixels -> BC1
+    # 2. DXT1a detection: BC1 textures using 1-bit alpha -> preserve as BC2 when reprocessing
+    # This is the only reliable way to detect DXT1a textures which would otherwise lose alpha
+    optimize_unused_alpha: bool = True  # Default ON - recommended for accurate processing
     alpha_threshold: int = 255  # Only pixels with alpha == 255 are considered "opaque"
 
     # Parallel analysis chunk size (batch size for alpha analysis)

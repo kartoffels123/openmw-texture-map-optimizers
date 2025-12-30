@@ -169,16 +169,18 @@ def _process_normal_map(input_dds: Path, output_dds: Path, is_nh: bool, settings
                             can_passthrough = True
 
                     if can_passthrough:
-                        if needs_rename:
-                            output_path_str = str(output_dds)
-                            if output_path_str.lower().endswith('_nh.dds'):
-                                corrected_output = Path(output_path_str[:-7] + '_n.dds')
-                                corrected_output.parent.mkdir(parents=True, exist_ok=True)
-                                shutil.copy2(input_dds, corrected_output)
-                                return True
-                        else:
-                            shutil.copy2(input_dds, output_dds)
-                            return True
+                        # Only copy if copy_passthrough_files is enabled
+                        if settings.get('copy_passthrough_files', False):
+                            if needs_rename:
+                                output_path_str = str(output_dds)
+                                if output_path_str.lower().endswith('_nh.dds'):
+                                    corrected_output = Path(output_path_str[:-7] + '_n.dds')
+                                    corrected_output.parent.mkdir(parents=True, exist_ok=True)
+                                    shutil.copy2(input_dds, corrected_output)
+                            else:
+                                shutil.copy2(input_dds, output_dds)
+                        # Return True either way - passthrough means "no processing needed"
+                        return True
 
         # Check if we're resizing
         will_resize = (new_width != orig_width) or (new_height != orig_height)
@@ -315,6 +317,20 @@ def _process_file_worker(args):
             orig_format = cached_analysis['format']
             result.orig_dims = orig_dims
             result.orig_format = orig_format
+
+            # Handle passthrough files when copy_passthrough_files=False
+            # These files are skipped entirely (no processing, no output file)
+            is_passthrough = cached_analysis.get('is_passthrough', False)
+            copy_passthrough = settings.get('copy_passthrough_files', False)
+
+            if is_passthrough and not copy_passthrough:
+                # Passthrough file with copying disabled - skip without error
+                result.success = True
+                result.new_dims = (cached_analysis.get('new_width', orig_dims[0]),
+                                   cached_analysis.get('new_height', orig_dims[1]))
+                result.new_format = cached_analysis.get('target_format', orig_format)
+                result.output_size = 0  # No output file created
+                return result
         else:
             orig_dims, orig_format = _get_dds_info(dds_file)
             result.orig_dims = orig_dims
@@ -326,11 +342,18 @@ def _process_file_worker(args):
 
         success = _process_normal_map(dds_file, output_file, is_nh, settings)
 
-        if success and output_file.exists():
+        if success:
             result.success = True
-            result.output_size = output_file.stat().st_size
-            result.new_dims = _get_dimensions(output_file)
-            result.new_format = _get_format(output_file)
+            if output_file.exists():
+                result.output_size = output_file.stat().st_size
+                result.new_dims = _get_dimensions(output_file)
+                result.new_format = _get_format(output_file)
+            else:
+                # Passthrough case where copy was skipped but processing reported success
+                result.new_dims = (cached_analysis.get('new_width', result.orig_dims[0]),
+                                   cached_analysis.get('new_height', result.orig_dims[1])) if cached_analysis else result.orig_dims
+                result.new_format = cached_analysis.get('target_format', result.orig_format) if cached_analysis else result.orig_format
+                result.output_size = 0
         else:
             result.error_msg = "Processing failed or output missing"
 
@@ -434,7 +457,7 @@ def _analyze_file_worker(args):
         original_is_nh = dds_file.stem.lower().endswith('_nh')
 
         # Compressed passthrough info
-        if settings.get('allow_compressed_passthrough', False):
+        if settings.get('allow_compressed_passthrough', False) and not will_resize:
             if current_format in ['BC5/ATI2', 'BC3/DXT5', 'BC1/DXT1']:
                 can_passthrough = False
                 needs_rename = False
@@ -456,10 +479,11 @@ def _analyze_file_worker(args):
                         can_passthrough = True
 
                 if can_passthrough:
+                    result.is_passthrough = True
                     if needs_rename:
-                        warnings.append("Compressed passthrough with rename - copying _NH→_N (mislabeled, no reprocessing needed)")
+                        warnings.append("Compressed passthrough (rename _NH→_N) - already optimized, no reprocessing needed")
                     else:
-                        warnings.append("Compressed passthrough - file will be copied as-is (no Z-reconstruction or mipmap regen)")
+                        warnings.append("Compressed passthrough - already optimized, no reprocessing needed")
 
         # Auto-fixed mislabeled NH texture
         if original_is_nh and not is_nh and settings.get('auto_fix_nh_to_n', True):
@@ -596,6 +620,20 @@ class NormalMapProcessor:
             )
 
         n_files, nh_files = self.find_normal_maps(input_dir)
+
+        # Filter out passthrough files if copy_passthrough_files is disabled
+        copy_passthrough = settings_dict.get('copy_passthrough_files', False)
+        if not copy_passthrough:
+            def should_process(f):
+                rel_path = str(f.relative_to(input_dir))
+                cached = self._get_cached_analysis(rel_path)
+                if cached and cached.get('is_passthrough', False):
+                    return False  # Skip passthrough files
+                return True
+
+            n_files = [f for f in n_files if should_process(f)]
+            nh_files = [f for f in nh_files if should_process(f)]
+
         total_files = len(n_files) + len(nh_files)
 
         if total_files == 0:
@@ -743,7 +781,10 @@ class NormalMapProcessor:
             return {
                 'width': result.width,
                 'height': result.height,
+                'new_width': result.new_width,
+                'new_height': result.new_height,
                 'format': result.format,
-                'target_format': result.target_format
+                'target_format': result.target_format,
+                'is_passthrough': result.is_passthrough,
             }
         return None

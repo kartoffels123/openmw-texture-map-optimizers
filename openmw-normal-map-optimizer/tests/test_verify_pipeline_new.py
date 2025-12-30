@@ -81,6 +81,7 @@ def load_settings_from_dict(settings_dict: dict) -> ProcessingSettings:
         auto_fix_nh_to_n=settings_dict.get('auto_fix_nh_to_n', True),
         auto_optimize_n_alpha=settings_dict.get('auto_optimize_n_alpha', True),
         allow_compressed_passthrough=settings_dict.get('allow_compressed_passthrough', False),
+        copy_passthrough_files=settings_dict.get('copy_passthrough_files', False),
         enable_atlas_downscaling=settings_dict.get('enable_atlas_downscaling', False),
         atlas_max_resolution=settings_dict.get('atlas_max_resolution', 4096),
         enforce_power_of_2=settings_dict.get('enforce_power_of_2', True)

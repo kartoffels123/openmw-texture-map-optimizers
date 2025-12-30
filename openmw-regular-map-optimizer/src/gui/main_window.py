@@ -72,12 +72,12 @@ class RegularTextureProcessorGUI:
         self.use_path_whitelist = tk.BooleanVar(value=True)
         self.use_path_blacklist = tk.BooleanVar(value=True)
         self.custom_blacklist = tk.StringVar(value="")
-        self.copy_passthrough_files = tk.BooleanVar(value=True)
+        self.copy_passthrough_files = tk.BooleanVar(value=False)
         self.use_no_mipmap_paths = tk.BooleanVar(value=True)
         self.exclude_normal_maps = tk.BooleanVar(value=True)
         self.enable_atlas_downscaling = tk.BooleanVar(value=False)
         self.atlas_max_resolution = tk.IntVar(value=4096)
-        self.optimize_unused_alpha = tk.BooleanVar(value=False)
+        self.optimize_unused_alpha = tk.BooleanVar(value=True)  # Default ON - recommended
         self.alpha_threshold = tk.IntVar(value=255)
         self.analysis_chunk_size = tk.IntVar(value=100)  # Chunk size for parallel alpha analysis
 
@@ -275,23 +275,29 @@ class RegularTextureProcessorGUI:
                  font=("", 8, "italic")).grid(row=5, column=2, sticky="w")
 
         # Alpha Optimization
-        frame_alpha = ttk.LabelFrame(scrollable, text="Alpha Optimization", padding=10)
+        frame_alpha = ttk.LabelFrame(scrollable, text="Alpha Optimization (RECOMMENDED)", padding=10)
         frame_alpha.pack(fill="x", padx=10, pady=5)
 
         ttk.Label(frame_alpha,
-                 text="Analyzes alpha channels to detect 'fake' alpha (all opaque pixels).\n"
-                      "Textures with unused alpha can be compressed to BC1 instead of BC3, saving space.\n"
-                      "This adds analysis time but can significantly reduce file sizes.",
+                 text="Alpha optimization performs two critical functions:\n"
+                      "1. Detects 'fake' alpha (all opaque pixels) -> compress to BC1/BGR, saving space/\n"
+                      "2. Detects DXT1a (BC1 with 1-bit alpha) -> preserves alpha by upgrading to BC2 when resizing or if recalculating mipmaps.",
                  font=("", 8), wraplength=600, justify="left").pack(anchor="w", pady=(0, 5))
 
-        ttk.Checkbutton(frame_alpha, text="Optimize away unused alpha channels",
+        ttk.Checkbutton(frame_alpha, text="Enable alpha optimization (STRONGLY RECOMMENDED)",
                        variable=self.optimize_unused_alpha).pack(anchor="w")
-        ttk.Label(frame_alpha, text="Scans TGA_RGBA, BGRA, BC2, BC3 files for all-opaque alpha (all pixels = 255)",
+        ttk.Label(frame_alpha, text="Scans all textures to detect unused alpha AND DXT1a transparency",
                  font=("", 8)).pack(anchor="w", padx=(20, 0))
 
         ttk.Label(frame_alpha,
-                 text="Note: Adds significant analysis time for large datasets",
+                 text="Note: Adds analysis time (reads full texture data, not just headers).\n"
+                      "However, this is ESSENTIAL for accurate processing, especially when resizing.",
                  font=("", 8), foreground="orange").pack(anchor="w", pady=(5, 0))
+
+        ttk.Label(frame_alpha,
+                 text="WARNING: Disabling this may cause loss of transparency in DXT1a textures.\n"
+                      "Only disable if you are certain your textures don't use DXT1a.",
+                 font=("", 8), foreground="red").pack(anchor="w", pady=(2, 0))
 
     def _create_advanced_settings(self, parent):
         """Create advanced settings tab"""
@@ -316,8 +322,8 @@ class RegularTextureProcessorGUI:
 
         ttk.Checkbutton(frame_pass, text="Copy passthrough files to output",
                        variable=self.copy_passthrough_files).pack(anchor="w", pady=(10, 0))
-        ttk.Label(frame_pass, text="When enabled, well-compressed files are copied to output directory.\n"
-                                   "When disabled, they are skipped entirely (saves disk space).",
+        ttk.Label(frame_pass, text="When enabled, passthrough files are copied to output directory.\n"
+                                   "When disabled, they are skipped (output only contains modified textures).",
                  font=("", 8)).pack(anchor="w", padx=(20, 0))
 
         ttk.Checkbutton(frame_pass, text="Preserve compressed format (BC1->BC1, BC2->BC2, BC3->BC3)",
@@ -946,11 +952,20 @@ class RegularTextureProcessorGUI:
             if action_groups['no_change']:
                 self.log(f"Files to reprocess: {len(action_groups['no_change'])} (same format/size, mipmap regeneration)")
             if action_groups['passthrough']:
-                self.log(f"Files to pass through: {len(action_groups['passthrough'])} (copied as-is)")
+                copy_passthrough = self.copy_passthrough_files.get()
+                if copy_passthrough:
+                    self.log(f"Files to pass through: {len(action_groups['passthrough'])} (will be copied)")
+                else:
+                    self.log(f"Files to pass through: {len(action_groups['passthrough'])} (will be skipped)")
 
             files_to_process = total_modify + len(action_groups['no_change'])
             self.log(f"\n{files_to_process} files will be processed (cuttlefish for BC/BGRA, texconv for BGR).")
-            self.log(f"{len(action_groups['passthrough'])} files will be copied as-is (well-compressed passthrough).")
+            if action_groups['passthrough']:
+                copy_passthrough = self.copy_passthrough_files.get()
+                if copy_passthrough:
+                    self.log(f"{len(action_groups['passthrough'])} files already optimized (will be copied to output).")
+                else:
+                    self.log(f"{len(action_groups['passthrough'])} files already optimized (will be skipped, not in output).")
 
             # Projection
             savings = total_current - total_projected
@@ -1070,8 +1085,23 @@ class RegularTextureProcessorGUI:
             output_dir = Path(self.output_dir.get())
             all_files = self.processor.find_textures(input_dir)
 
-            self.log(f"Processing {len(all_files)} files...\n")
-            self.progress_bar["maximum"] = len(all_files)
+            # Filter out passthrough files if copy_passthrough_files is disabled
+            # to show accurate count of files that will actually be processed
+            copy_passthrough = self.copy_passthrough_files.get()
+            if not copy_passthrough and self.processor.analysis_cache:
+                files_to_process = []
+                for f in all_files:
+                    rel_path = str(f.relative_to(input_dir))
+                    cached = self.processor.analysis_cache.get(rel_path)
+                    if cached and cached.is_passthrough:
+                        continue  # Skip passthrough files
+                    files_to_process.append(f)
+                process_count = len(files_to_process)
+            else:
+                process_count = len(all_files)
+
+            self.log(f"Processing {process_count} files...\n")
+            self.progress_bar["maximum"] = process_count
             self.progress_bar["value"] = 0
 
             last_ui_update = time.time()

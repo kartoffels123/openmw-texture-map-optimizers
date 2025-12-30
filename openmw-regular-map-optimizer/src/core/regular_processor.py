@@ -449,6 +449,19 @@ def _process_file_worker(args):
         if cached_analysis:
             result.orig_dims = (cached_analysis['width'], cached_analysis['height'])
             result.orig_format = cached_analysis['format']
+
+            # Handle passthrough files when copy_passthrough_files=False
+            # These files are skipped entirely (no processing, no output file)
+            is_passthrough = cached_analysis.get('is_passthrough', False)
+            copy_passthrough = settings.get('copy_passthrough_files', False)
+
+            if is_passthrough and not copy_passthrough:
+                # Passthrough file with copying disabled - skip without error
+                result.success = True
+                result.new_dims = result.orig_dims
+                result.new_format = cached_analysis.get('target_format', result.orig_format)
+                result.output_size = 0  # No output file created
+                return result
         else:
             dims, fmt = parse_dds_header(input_file)
             result.orig_dims = dims
@@ -457,12 +470,18 @@ def _process_file_worker(args):
         # Pass cached analysis to processing function so it uses pre-computed target format
         success, error_detail = _process_texture_static(input_file, output_file, settings, cached_analysis)
 
-        if success and output_file.exists():
+        if success:
             result.success = True
-            result.output_size = output_file.stat().st_size
-            new_dims, new_fmt = parse_dds_header(output_file)
-            result.new_dims = new_dims
-            result.new_format = new_fmt
+            if output_file.exists():
+                result.output_size = output_file.stat().st_size
+                new_dims, new_fmt = parse_dds_header(output_file)
+                result.new_dims = new_dims
+                result.new_format = new_fmt
+            else:
+                # Passthrough case where copy was skipped but processing reported success
+                result.new_dims = result.orig_dims
+                result.new_format = cached_analysis.get('target_format', result.orig_format) if cached_analysis else result.orig_format
+                result.output_size = 0
         else:
             result.error_msg = error_detail or "Processing failed or output missing"
 
@@ -531,27 +550,29 @@ def _analyze_file_worker(args):
         # Determine if source has alpha
         result.has_alpha = _has_alpha_channel(result.format)
 
-        # Check for BC1/DXT1 with 1-bit alpha (DXT1a mode)
-        if result.format == 'BC1/DXT1':
-            try:
+        # Alpha optimization: detect unused alpha AND DXT1a textures
+        optimize_alpha = settings.get('optimize_unused_alpha', False)
+
+        if optimize_alpha:
+            alpha_threshold = settings.get('alpha_threshold', 255)
+
+            # Check BC1/DXT1 for DXT1a (1-bit alpha) - important for correct reprocessing
+            if result.format == 'BC1/DXT1':
+                # analyze_bc1_alpha returns True if DXT1a is used (has transparent pixels)
                 if analyze_bc1_alpha(input_file):
                     result.has_dxt1a = True
-                    result.warnings.append("BC1/DXT1 uses 1-bit alpha (DXT1a mode)")
-            except Exception:
-                pass  # Ignore errors, assume no DXT1a
+                    result.has_alpha = True  # DXT1a does have meaningful alpha
 
-        # Optional: Check if alpha is actually used (not just declared in format)
-        optimize_alpha = settings.get('optimize_unused_alpha', False)
-        if optimize_alpha and result.has_alpha:
-            alpha_threshold = settings.get('alpha_threshold', 255)
-            # Check if alpha is actually meaningful (not all opaque)
-            actually_has_alpha = has_meaningful_alpha(input_file, result.format, alpha_threshold)
-            if not actually_has_alpha:
-                # Track the optimization
-                result.alpha_optimized = True
-                result.original_format = result.format
-                result.has_alpha = False
-                # Note: actual target format determined later (BC1 for normal size, BGR for small)
+            # Check other alpha formats for unused alpha
+            elif result.has_alpha:
+                # Check if alpha is actually meaningful (not all opaque)
+                actually_has_alpha = has_meaningful_alpha(input_file, result.format, alpha_threshold)
+                if not actually_has_alpha:
+                    # Track the optimization
+                    result.alpha_optimized = True
+                    result.original_format = result.format
+                    result.has_alpha = False
+                    # Note: actual target format determined later (BC1 for normal size, BGR for small)
 
         # Calculate new dimensions (handles atlas protection, max/min resolution)
         is_atlas = is_texture_atlas(input_file)
@@ -567,19 +588,27 @@ def _analyze_file_worker(args):
         has_valid_mipmaps = _is_well_compressed(result.format, result.mipmap_count, result.width, result.height)
 
         if is_compressed:
-            # Determine target format based on alpha optimization
+            # Determine target format based on alpha optimization and DXT1a detection
             if result.alpha_optimized:
                 # Alpha was unused - downgrade to BC1
                 target_format = 'BC1/DXT1'
+            elif result.has_dxt1a:
+                # DXT1a (BC1 with 1-bit alpha) - upgrade to BC2 when reprocessing
+                # BC2 preserves the alpha better than BC3 for 1-bit transparency
+                target_format = 'BC2/DXT3'
             else:
                 # Keep original format
                 target_format = result.format
 
+            # Check for passthrough (DXT1a that doesn't need resize is still passthrough)
             if not will_resize and has_valid_mipmaps and not result.alpha_optimized:
                 # Passthrough: already compressed with valid mipmaps, no resize needed, no alpha change
                 result.is_passthrough = True
                 result.target_format = result.format
-                result.warnings.append(f"Passthrough: {result.format} with valid mipmaps")
+                if result.has_dxt1a:
+                    result.warnings.append(f"Compressed passthrough - DXT1a with valid mipmaps, no reprocessing needed")
+                else:
+                    result.warnings.append(f"Compressed passthrough - already optimized ({result.format}), no reprocessing needed")
                 result.projected_size = file_size
                 return result
             else:
@@ -587,6 +616,12 @@ def _analyze_file_worker(args):
                 result.target_format = target_format
                 if result.alpha_optimized:
                     result.warnings.append(f"Alpha unused ({result.original_format} → {target_format})")
+                elif result.has_dxt1a:
+                    # DXT1a needs reprocessing - explain why and that we're preserving alpha
+                    if will_resize:
+                        result.warnings.append("DXT1a detected (resize) - upgrading to BC2 to preserve 1-bit alpha")
+                    else:
+                        result.warnings.append("DXT1a detected (mipmap regen) - upgrading to BC2 to preserve 1-bit alpha")
                 elif will_resize:
                     result.warnings.append(f"Reprocessing {result.format}: resize required")
                 else:
@@ -861,6 +896,18 @@ class RegularTextureProcessor:
         if not all_files:
             return []
 
+        # Filter out passthrough files if copy_passthrough_files is disabled
+        copy_passthrough = settings_dict.get('copy_passthrough_files', False)
+        if not copy_passthrough:
+            files_to_process = []
+            for f in all_files:
+                rel_path = str(f.relative_to(input_dir))
+                cached = self._get_cached_analysis(rel_path)
+                if cached and cached.get('is_passthrough', False):
+                    continue  # Skip passthrough files
+                files_to_process.append(f)
+            all_files = files_to_process
+
         results = []
         total = len(all_files)
 
@@ -921,5 +968,6 @@ class RegularTextureProcessor:
                 'mipmap_count': result.mipmap_count,
                 'alpha_optimized': result.alpha_optimized,
                 'is_passthrough': result.is_passthrough,
+                'has_dxt1a': result.has_dxt1a,
             }
         return None

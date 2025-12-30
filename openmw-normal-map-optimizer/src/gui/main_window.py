@@ -67,6 +67,7 @@ class NormalMapProcessorGUI:
         self.auto_fix_nh_to_n = tk.BooleanVar(value=True)
         self.auto_optimize_n_alpha = tk.BooleanVar(value=True)
         self.allow_compressed_passthrough = tk.BooleanVar(value=False)
+        self.copy_passthrough_files = tk.BooleanVar(value=False)
 
         # Atlas settings
         self.enable_atlas_downscaling = tk.BooleanVar(value=False)
@@ -83,7 +84,8 @@ class NormalMapProcessorGUI:
                     self.uniform_weighting, self.use_dithering, self.use_small_texture_override,
                     self.small_nh_threshold, self.small_n_threshold, self.preserve_compressed_format,
                     self.auto_fix_nh_to_n, self.auto_optimize_n_alpha, self.allow_compressed_passthrough,
-                    self.enable_atlas_downscaling, self.atlas_max_resolution, self.enforce_power_of_2]:
+                    self.copy_passthrough_files, self.enable_atlas_downscaling, self.atlas_max_resolution,
+                    self.enforce_power_of_2]:
             var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
@@ -93,17 +95,14 @@ class NormalMapProcessorGUI:
         tab_help = ttk.Frame(notebook)
         tab_settings = ttk.Frame(notebook)
         tab_process = ttk.Frame(notebook)
-        tab_version = ttk.Frame(notebook)
 
         notebook.add(tab_help, text="📖 READ THIS FIRST - Help & Documentation")
         notebook.add(tab_settings, text="⚙️ Settings")
         notebook.add(tab_process, text="▶️ Process Files")
-        notebook.add(tab_version, text="📋 Version Info")
 
         self._create_help_tab(tab_help)
         self._create_settings_tab(tab_settings)
         self._create_process_tab(tab_process)
-        self._create_version_tab(tab_version)
 
     def _create_help_tab(self, tab_help):
         """Create the help/documentation tab with nested sub-tabs"""
@@ -253,12 +252,12 @@ class NormalMapProcessorGUI:
         decision_flow_text = (
             "The tool applies format decisions in this priority order:\n\n"
             "Priority 0: Compressed Passthrough (if enabled - NOT RECOMMENDED)\n"
-            "  ⚠ Well-compressed textures → Simply COPIED, no processing at all\n"
+            "  ⚠ Well-compressed textures → Skip reprocessing entirely\n"
             "  ⚠ NH in BC3 → passthrough ✓ | N in BC5/BC1 → passthrough ✓\n"
             "  ⚠ NH in BC5/BC1 → passthrough + rename to _N ✓ (mislabeled)\n"
             "  ⚠ N in BC3 → reprocess (wasted alpha, not well-compressed)\n"
             "  ⚠ Skips Z-channel reconstruction and mipmap regeneration\n"
-            "  ⚠ Only use if CERTAIN your compressed textures are already correct\n\n"
+            "  ⚠ Use 'Copy passthrough files' to control output behavior\n\n"
             "Priority 1: Format Options (_N and _NH)\n"
             "  • NH textures → User's NH format (default: BC3/DXT5)\n"
             "  • N textures → User's N format (default: BC5/ATI2)\n\n"
@@ -694,10 +693,16 @@ class NormalMapProcessorGUI:
         ttk.Checkbutton(frame_smart_format, text="Allow well-compressed textures to passthrough (NOT recommended)",
                        variable=self.allow_compressed_passthrough).grid(row=6, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Label(frame_smart_format,
-                 text="⚠ When enabled, correctly-compressed textures are simply copied without reprocessing. NH in BC3 and N in BC5/BC1 pass through. Mislabeled NH in BC5/BC1 are copied and renamed to _N (no reprocessing). Only N in BC3 (wasted alpha) are reprocessed. Skips Z-channel reconstruction and mipmap regeneration. Only use if you're CERTAIN your compressed textures are already correct.",
+                 text="⚠ When enabled, correctly-compressed textures skip reprocessing. NH in BC3 and N in BC5/BC1 pass through. Mislabeled NH in BC5/BC1 are renamed to _N. Only N in BC3 (wasted alpha) are reprocessed. Skips Z-channel reconstruction and mipmap regeneration. Use 'Copy passthrough files' below to control whether skipped files are copied to output or left in place.",
                  font=("", 8), wraplength=600, justify="left", foreground="red").grid(row=7, column=0, columnspan=3, sticky="w", pady=2)
 
-        ttk.Label(frame_smart_format, text="", font=("", 2)).grid(row=8, column=0, columnspan=3, sticky="w")
+        ttk.Checkbutton(frame_smart_format, text="Copy passthrough files to output",
+                       variable=self.copy_passthrough_files).grid(row=8, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_smart_format,
+                 text="When enabled, passthrough files are copied to output directory. When disabled, they are skipped entirely (saves disk space, output only contains modified textures).",
+                 font=("", 8), wraplength=600, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=2)
+
+        ttk.Label(frame_smart_format, text="", font=("", 2)).grid(row=10, column=0, columnspan=3, sticky="w")
 
         ttk.Label(frame_smart_format,
                  text="Decision Priority Order:\n"
@@ -711,7 +716,7 @@ class NormalMapProcessorGUI:
                       "3. Preserve compressed formats when not downscaling\n"
                       "4. Auto-optimize formats with wasted alpha\n"
                       "5. Small texture override (only for uncompressed sources)",
-                 font=("", 8), wraplength=600, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=(5, 2))
+                 font=("", 8), wraplength=600, justify="left").grid(row=11, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
         # Texture Atlas Settings (Collapsible)
         frame_atlas = ttk.LabelFrame(scrollable, text="Texture Atlas Settings (Advanced)", padding=10)
@@ -777,104 +782,6 @@ class NormalMapProcessorGUI:
         self.export_settings_btn.pack(side="left", padx=5)
         self.process_btn = ttk.Button(button_frame, text="Process Files", command=self.start_processing, state="disabled")
         self.process_btn.pack(side="left", padx=5)
-
-    def _create_version_tab(self, tab_version):
-        """Create the version history tab"""
-        main_container = ttk.Frame(tab_version)
-        main_container.pack(fill="both", expand=True)
-
-        canvas_version = tk.Canvas(main_container, highlightthickness=0)
-        scrollbar_version = ttk.Scrollbar(main_container, orient="vertical", command=canvas_version.yview)
-        scrollable_version = ttk.Frame(canvas_version)
-
-        scrollable_version.bind(
-            "<Configure>",
-            lambda e: canvas_version.configure(scrollregion=canvas_version.bbox("all"))
-        )
-
-        canvas_version.create_window((0, 0), window=scrollable_version, anchor="nw")
-        canvas_version.configure(yscrollcommand=scrollbar_version.set)
-
-        canvas_version.pack(side="left", fill="both", expand=True)
-        scrollbar_version.pack(side="right", fill="y")
-
-        scroll_hint = ttk.Label(tab_version, text="⬇ Scroll down for more ⬇",
-                               font=("", 9, "bold"), foreground="blue",
-                               background="#f0f0f0", anchor="center")
-        scroll_hint.pack(side="bottom", fill="x", pady=2)
-
-        def _on_mousewheel(event):
-            canvas_version.yview_scroll(int(-1*(event.delta/120)), "units")
-        canvas_version.bind_all("<MouseWheel>", _on_mousewheel)
-
-        # Version Info
-        frame_version = ttk.LabelFrame(scrollable_version, text="Version Features", padding=10)
-        frame_version.pack(fill="x", padx=10, pady=5)
-
-        version_text = (
-            "Version 0.9\n"
-            "Features:\n"
-            "  • Batch processing of normal maps (_N.dds and _NH.dds)\n"
-            "  • Format conversion (BC5, BC3/DXT5, BC1/DXT1, BGRA, BGR)\n"
-            "  • Texture downscaling with quality filters and resolution constraints\n"
-            "  • Z-channel reconstruction for proper normal mapping\n"
-            "  • Y flip normal map conversion\n"
-            "  • Smart small texture handling\n"
-            "  • Smart format preservation (keeps compressed formats when not downscaling)\n"
-            "  • Auto-fix mislabeled NH→N textures (BGR/BC5/BC1 formats)\n"
-            "  • Auto-optimize N textures with unused alpha (BGRA→user N format, BC3→BC1)\n"
-            "  • Comprehensive warning system with context-aware auto-fix detection\n"
-            "  • Dry run analysis with size projections and detailed conversion breakdown\n"
-            "  • Analysis caching for instant processing after dry run\n"
-            "  • Detailed processing logs and statistics\n"
-            "  • Export analysis reports\n"
-            "  • Parallel processing (multi-core support for faster batch operations)\n"
-            "  • Power-of-2 enforcement (enabled by default)\n\n"
-            "Version 0.9 Updates:\n"
-            "  • Bugfix for resizing - Min/max resolution logic now works correctly\n"
-            "  • Default enforce of power-of-2 - Now enabled by default (expected standard)\n"
-            "  • More clear UI on resizing - Added 'Ceiling/Floor' labels and 'How Downscaling Works' guide\n"
-            "  • More clear analysis on resizing - Better messaging about min/max protection\n\n"
-            "Version 0.8 Updates:\n"
-            "  • Analysis caching - headers read once, reused during processing\n"
-            "  • Enforced workflow - Process Files disabled until dry run completes\n"
-            "  • Auto-cache invalidation when settings change\n"
-            "  • Texture atlas protection - auto-detects 'atlas' filenames or ATL directories\n"
-            "  • Smart resolution warnings show whether current settings will auto-fix\n"
-            "  • Cleaner output - consolidated sections, less redundancy\n"
-            "  • Better terminology - 'Recalculate' vs 'Convert' for clarity\n"
-            "  • Format comparison fixed (BC1_UNORM → BC1/DXT1 normalization)\n"
-            "  • Performance - stores only 5 file examples instead of full lists\n"
-            "  • Removed misleading 'preserved format' messages\n\n"
-            "Version 0.7 Updates:\n"
-            "  • NEW: ~100x faster dry run analysis (6,000 files in <1 second vs 1 minute)\n"
-            "  • NEW: Direct DDS header parsing eliminates subprocess overhead\n"
-            "  • NEW: Optimized file discovery for large directories (only scans _n.dds/_nh.dds)\n"
-            "  • NEW: Grouped conversion summary shows format/resize changes clearly\n"
-            "  • NEW: Reorganized codebase with cleaner structure (src/core, src/gui)\n"
-            "  • NEW: Support for BC4, BC6H, BC7, and many additional DDS formats\n\n"
-            "Version 0.6 Updates:\n"
-            "  • UI/UX improvements and refinements\n"
-            "  • Enhanced log output and reporting\n\n"
-            "Version 0.5 Updates:\n"
-            "  • NEW: Smart format handling preserves compressed formats when not downscaling\n"
-            "  • NEW: Auto-detection and fixing of mislabeled NH textures\n"
-            "  • NEW: Auto-optimization of N textures with wasted alpha channels\n"
-            "  • NEW: Comprehensive warning system shows potential issues before processing\n\n"
-            "Known Issues:\n"
-            "  • The 'Preserve compressed format' option (enabled by default) prevents unnecessary\n"
-            "    format conversions when not downscaling. However, all files are still reprocessed\n"
-            "    for Z-channel reconstruction and mipmap regeneration.\n"
-            "  • The 'Allow well-compressed textures to passthrough' option (disabled by default)\n"
-            "    can skip reprocessing entirely, but should only be used if you're certain your\n"
-            "    compressed textures already have correct Z-channels and mipmaps.\n"
-            "  • The dry run analysis provides detailed warnings about any problematic conversions\n"
-            "    before you commit to processing files.\n"
-        )
-
-        version_label = ttk.Label(frame_version, text=version_text, justify="left",
-                                  font=("Courier New", 9), wraplength=self.WRAPLENGTH)
-        version_label.pack(anchor="w")
 
     def _create_link(self, parent, text, url, font_size=9):
         """Helper to create clickable hyperlinks"""
@@ -975,6 +882,7 @@ class NormalMapProcessorGUI:
             auto_fix_nh_to_n=self.auto_fix_nh_to_n.get(),
             auto_optimize_n_alpha=self.auto_optimize_n_alpha.get(),
             allow_compressed_passthrough=self.allow_compressed_passthrough.get(),
+            copy_passthrough_files=self.copy_passthrough_files.get(),
             enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
             atlas_max_resolution=self.atlas_max_resolution.get(),
             enforce_power_of_2=self.enforce_power_of_2.get()
@@ -1263,14 +1171,22 @@ class NormalMapProcessorGUI:
                 self.log(f"Files to recalculate: {len(action_groups['no_change'])} (same format/size, Z-fix + mipmaps)")
 
             if len(action_groups['passthrough']) > 0:
-                self.log(f"Files to pass through: {len(action_groups['passthrough'])} (copied as-is, no processing)")
+                copy_passthrough = self.copy_passthrough_files.get()
+                if copy_passthrough:
+                    self.log(f"Files to pass through: {len(action_groups['passthrough'])} (will be copied)")
+                else:
+                    self.log(f"Files to pass through: {len(action_groups['passthrough'])} (will be skipped)")
 
             # Update the final message to exclude passthrough files
             files_to_process = len(results) - len(action_groups['passthrough'])
             if files_to_process > 0:
                 self.log(f"\n{files_to_process} files will receive Z-reconstruction + mipmap regeneration.")
             if len(action_groups['passthrough']) > 0:
-                self.log(f"{len(action_groups['passthrough'])} files will be copied as-is (compressed passthrough enabled).")
+                copy_passthrough = self.copy_passthrough_files.get()
+                if copy_passthrough:
+                    self.log(f"{len(action_groups['passthrough'])} files already optimized (will be copied to output).")
+                else:
+                    self.log(f"{len(action_groups['passthrough'])} files already optimized (will be skipped, not in output).")
 
             # Projection
             savings = total_current_size - total_projected_size

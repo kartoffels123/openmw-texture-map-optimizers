@@ -95,8 +95,18 @@ def verify_analysis_vs_output(
 
     mismatches = []
     verified_count = 0
+    skipped_passthrough = 0
+
+    # Check if passthrough files should be copied or skipped
+    copy_passthrough = settings_dict.get('copy_passthrough_files', False)
 
     for rel_path, prediction in predictions.items():
+        # Skip passthrough files in verification if copy_passthrough_files=False
+        if prediction.get('is_passthrough', False) and not copy_passthrough:
+            skipped_passthrough += 1
+            verified_count += 1  # Count as verified (expected to not exist)
+            continue
+
         output_file = output_dir / rel_path
 
         # TGA files are converted to DDS, so check for .dds output
@@ -153,19 +163,21 @@ def verify_analysis_vs_output(
             print(f"  Verified {verified_count}/{len(predictions)} files...")
 
     # Generate report
-    _generate_report(output_dir, settings_dict, predictions, verified_count, mismatches)
+    _generate_report(output_dir, settings_dict, predictions, verified_count, mismatches, skipped_passthrough)
 
     return (len(mismatches) == 0, mismatches, len(predictions))
 
 
 def _generate_report(output_dir: Path, settings_dict: dict, predictions: dict,
-                     verified_count: int, mismatches: List[Dict]):
+                     verified_count: int, mismatches: List[Dict], skipped_passthrough: int = 0):
     """Generate verification report"""
     print("\n" + "=" * 80)
     print("RESULTS")
     print("=" * 80)
     print(f"Total files checked: {len(predictions)}")
     print(f"Verified (match):    {verified_count}")
+    if skipped_passthrough > 0:
+        print(f"Passthrough skipped: {skipped_passthrough} (copy_passthrough_files=False)")
     print(f"Mismatches:          {len(mismatches)}")
 
     report_lines = [
@@ -184,6 +196,10 @@ def _generate_report(output_dir: Path, settings_dict: dict, predictions: dict,
         "=== Results ===",
         f"Total files checked: {len(predictions)}",
         f"Verified (match):    {verified_count}",
+    ])
+    if skipped_passthrough > 0:
+        report_lines.append(f"Passthrough skipped: {skipped_passthrough} (copy_passthrough_files=False)")
+    report_lines.extend([
         f"Mismatches:          {len(mismatches)}",
         ""
     ])
