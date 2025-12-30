@@ -116,7 +116,7 @@ DXGI_FORMAT_NAMES = {
     85: 'B5G6R5_UNORM',
     86: 'B5G5R5A1_UNORM',
     87: 'B8G8R8A8_UNORM',  # BGRA
-    88: 'B8G8R8X8_UNORM',  # BGRX/BGR
+    88: 'B8G8R8X8_UNORM',  # BGRX
     91: 'B8G8R8A8_UNORM_SRGB',
     93: 'B8G8R8X8_UNORM_SRGB',
     94: 'BC6H_TYPELESS',
@@ -126,6 +126,9 @@ DXGI_FORMAT_NAMES = {
     98: 'BC7_UNORM',
     99: 'BC7_UNORM_SRGB',
     115: 'B4G4R4A4_UNORM',
+    # Note that this is not a complete list of DXGI formats
+    # Further, some "OLD" formats (e.g. BG88R8 or BGR are not even included in the microsoft documentation.)
+    # However, these formats are very useful for uncompressed textures as BGR is 24bit and BGRA is 32 bit.
 }
 
 
@@ -143,6 +146,9 @@ def parse_dds_header(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str]:
         - B8G8R8A8_UNORM (BGRA)
         - B8G8R8X8_UNORM (BGR)
     """
+    # Note: It is very nice if someone has included the DX10 header, and filled it out completely. However, this basically never happens.
+    # Thus, we have to do our best effort to decode the format from legacy FourCC and uncompressed formats.
+    # Also, finally our sources and targets probably don't even use the DX10 header.
     try:
         with open(filepath, 'rb') as f:
             # Read magic + main header + DX10 header (if present)
@@ -174,8 +180,7 @@ def parse_dds_header(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str]:
             # Parse pixel format structure
             # Header layout: size(4) + flags(4) + height(4) + width(4) + pitch(4) + depth(4) + mipmap(4) + reserved1(44) = 72 bytes
             # Pixel format starts at byte 72 within header (absolute byte 76 from file start)
-            # Kaitai says fourcc is at absolute 0x54 (84), which is 84-4=80 in header, which is 72+8
-            pf_offset = 72  # Not 0x44!
+            pf_offset = 72
             pf_size = struct.unpack('<I', header[pf_offset:pf_offset+4])[0]
             pf_flags = struct.unpack('<I', header[pf_offset+4:pf_offset+8])[0]
             pf_fourcc = struct.unpack('<I', header[pf_offset+8:pf_offset+12])[0]
@@ -228,7 +233,7 @@ def parse_dds_header(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str]:
                     else:
                         format_str = 'B8G8R8X8_UNORM'
                 elif pf_rgb_bitcount == 24:
-                    format_str = 'B8G8R8_UNORM'
+                    format_str = 'B8G8R8_UNORM' # 24-bit BGR, this is not included in the DXGI formats. But it still exists.
                 elif pf_rgb_bitcount == 16:
                     # 16-bit formats - check bitmasks to determine exact format
                     pf_r_mask = struct.unpack('<I', header[pf_offset+16:pf_offset+20])[0]
@@ -327,7 +332,7 @@ def parse_dds_header_extended(filepath: Path) -> Tuple[Optional[Tuple[int, int]]
                 elif pf_fourcc == FOURCC_ATI1 or pf_fourcc == FOURCC_BC4U:
                     format_str = 'BC4_UNORM'
                 elif pf_fourcc == FOURCC_BC4S:
-                    format_str = 'BC4_SNORM'
+                    format_str = 'BC4_SNORM' # Rare to encounter.
                 elif pf_fourcc == FOURCC_ATI2 or pf_fourcc == FOURCC_BC5U:
                     format_str = 'BC5_UNORM'
                 else:
@@ -349,7 +354,7 @@ def parse_dds_header_extended(filepath: Path) -> Tuple[Optional[Tuple[int, int]]
                     else:
                         format_str = 'B8G8R8X8_UNORM'
                 elif pf_rgb_bitcount == 24:
-                    format_str = 'B8G8R8_UNORM'
+                    format_str = 'B8G8R8_UNORM' # Again not actually a DXGI format, but still exists.
                 elif pf_rgb_bitcount == 16:
                     # 16-bit formats - check bitmasks to determine exact format
                     pf_r_mask = struct.unpack('<I', header[pf_offset+16:pf_offset+20])[0]
@@ -416,6 +421,8 @@ def has_adequate_mipmaps(width: int, height: int, mipmap_count: int) -> bool:
 
 
 def parse_tga_header(filepath: Path) -> Tuple[Optional[Tuple[int, int]], str]:
+    # TODO: Ideally this should be not in the DDS parser file. But for now it's convenient to have it here.
+    # Also isn't it nice how much simpler TGA is compared to DDS?
     """
     Parse TGA header to extract dimensions.
 
@@ -478,6 +485,12 @@ def parse_tga_header_extended(filepath: Path) -> Tuple[Optional[Tuple[int, int]]
 # Alpha Channel Analysis Functions (Optional - for detecting unused alpha)
 # =============================================================================
 
+# This is some unhinged pixel sniffing right here. I got the DXT1a check from a stackoverflow answer:
+# https://stackoverflow.com/questions/19448/in-a-dds-file-can-you-detect-textures-with-0-1-alpha-bits
+# If you have to ask why to use numpy here, it's because doing this bytewise is very slow. Matrix operations are your friend.
+# No Python loops over pixels/blocks - just numpy array/matrix operations (often called "vectorized" in numpy jargon).
+# Yes you can make it faster with numba or cython, but this is already fast enough for our use case.
+
 def analyze_bc1_alpha(filepath: Path) -> bool:
     """
     Check if a BC1/DXT1 texture uses 1-bit alpha (DXT1a mode).
@@ -490,7 +503,7 @@ def analyze_bc1_alpha(filepath: Path) -> bool:
     If color0 <= color1, the block uses 3-color mode with 1-bit transparency.
     In this mode, index 3 means transparent black.
 
-    Uses NumPy for fast vectorized analysis.
+    Uses NumPy for fast array/matrix operations.
 
     Returns:
         True if any block uses transparency (has meaningful alpha)
@@ -542,15 +555,18 @@ def analyze_bc1_alpha(filepath: Path) -> bool:
                           (indices_bytes[:, 2].astype(np.uint32) << 16) |
                           (indices_bytes[:, 3].astype(np.uint32) << 24))
 
-            # Check only blocks in transparent mode
-            for block_idx in np.where(transparent_mode)[0]:
-                indices = indices_u32[block_idx]
-                # Check each of 16 pixels (2 bits each) for index 3
-                for p in range(16):
-                    if ((indices >> (p * 2)) & 0x3) == 3:
-                        return True
+            # Matrix check: for blocks in transparent mode, check if any pixel uses index 3
+            # Index 3 = binary 11, so we check all 16 pixel positions (2 bits each)
+            # Mask: 0x55555555 = 01010101... (bit 0 of each 2-bit pair)
+            # Mask: 0xAAAAAAAA = 10101010... (bit 1 of each 2-bit pair)
+            # Index 3 means both bits are set, so (indices & 0x55555555) and ((indices >> 1) & 0x55555555) both have that bit
+            transparent_indices = indices_u32[transparent_mode]
+            bit0 = transparent_indices & 0x55555555  # Odd bits (bit 0 of each pair)
+            bit1 = (transparent_indices >> 1) & 0x55555555  # Even bits shifted (bit 1 of each pair)
+            # Index 3 = both bits set, so bit0 & bit1 will have a 1 where index is 3
+            has_index_3 = (bit0 & bit1) != 0
 
-            return False
+            return bool(np.any(has_index_3))
 
     except Exception:
         return True
@@ -564,7 +580,7 @@ def analyze_bc2_alpha(filepath: Path, threshold: int = 255) -> bool:
     - 8 bytes: explicit 4-bit alpha for each of 16 pixels
     - 8 bytes: BC1-style color block
 
-    Uses NumPy for fast vectorized analysis.
+    Uses NumPy for fast array/matrix operations.
 
     Returns:
         True if any pixel has alpha < threshold (has meaningful alpha)
@@ -623,7 +639,7 @@ def analyze_bc3_alpha(filepath: Path, threshold: int = 255) -> bool:
       - 6 bytes: 3-bit indices for 16 pixels
     - 8 bytes: BC1-style color block
 
-    Uses NumPy for fast vectorized analysis with optimized fast-paths.
+    Uses NumPy for fast array/matrix operations with optimized fast-paths.
 
     Returns:
         True if alpha varies meaningfully (has meaningful alpha)
@@ -702,41 +718,78 @@ def analyze_bc3_alpha(filepath: Path, threshold: int = 255) -> bool:
                 if len(six_value_blocks) == 0:
                     return False  # No 6-value mode blocks
 
-                # Check index data for 6-value mode blocks
-                for block_idx in six_value_blocks:
-                    index_bytes = block_data[block_idx * 16 + 2:block_idx * 16 + 8]
-                    indices = int.from_bytes(index_bytes, 'little')
-                    for p in range(16):
-                        idx = (indices >> (p * 3)) & 0x7
-                        if idx == 6:  # Index 6 = 0 in 6-value mode
-                            return True
+                # Vectorized check for index 6 in 6-value mode blocks
+                # Extract index bytes (bytes 2-7 of each block) as 48-bit values
+                six_value_arr = arr[six_value_blocks]
+                # Combine 6 bytes into 48-bit index data per block
+                idx_bytes = six_value_arr[:, 2:8]
+                indices_48 = (idx_bytes[:, 0].astype(np.uint64) |
+                             (idx_bytes[:, 1].astype(np.uint64) << 8) |
+                             (idx_bytes[:, 2].astype(np.uint64) << 16) |
+                             (idx_bytes[:, 3].astype(np.uint64) << 24) |
+                             (idx_bytes[:, 4].astype(np.uint64) << 32) |
+                             (idx_bytes[:, 5].astype(np.uint64) << 40))
+
+                # Check all 16 pixels (3 bits each) for index 6 (binary 110)
+                # Mask for each 3-bit position and check if == 6
+                for shift in range(0, 48, 3):
+                    pixel_indices = (indices_48 >> shift) & 0x7
+                    if np.any(pixel_indices == 6):
+                        return True
 
                 return False  # No transparency found
 
-            # General case: need to compute interpolated values per block
-            # This is slower but handles arbitrary thresholds
-            for i in range(total_blocks):
-                a0 = alpha0[i]
-                a1 = alpha1[i]
+            # General case: matrix computation of interpolated alpha values
+            # Build lookup tables for all 8 possible indices per block
 
-                if a0 > a1:
-                    alphas = [a0, a1,
-                              (6 * a0 + 1 * a1) // 7, (5 * a0 + 2 * a1) // 7,
-                              (4 * a0 + 3 * a1) // 7, (3 * a0 + 4 * a1) // 7,
-                              (2 * a0 + 5 * a1) // 7, (1 * a0 + 6 * a1) // 7]
-                else:
-                    alphas = [a0, a1,
-                              (4 * a0 + 1 * a1) // 5, (3 * a0 + 2 * a1) // 5,
-                              (2 * a0 + 3 * a1) // 5, (1 * a0 + 4 * a1) // 5,
-                              0, 255]
+            # Convert to int16 for interpolation math (avoid overflow)
+            a0 = alpha0.astype(np.int16)
+            a1 = alpha1.astype(np.int16)
+            eight_mode = a0 > a1
 
-                index_bytes = block_data[i * 16 + 2:i * 16 + 8]
-                indices = int.from_bytes(index_bytes, 'little')
+            # Pre-compute all 8 alpha values for each block (shape: total_blocks x 8)
+            alpha_lut = np.zeros((total_blocks, 8), dtype=np.int16)
+            alpha_lut[:, 0] = a0
+            alpha_lut[:, 1] = a1
 
-                for p in range(16):
-                    idx = (indices >> (p * 3)) & 0x7
-                    if alphas[idx] < threshold:
-                        return True
+            # 8-value mode interpolation (a0 > a1)
+            em = eight_mode
+            alpha_lut[em, 2] = (6 * a0[em] + 1 * a1[em]) // 7
+            alpha_lut[em, 3] = (5 * a0[em] + 2 * a1[em]) // 7
+            alpha_lut[em, 4] = (4 * a0[em] + 3 * a1[em]) // 7
+            alpha_lut[em, 5] = (3 * a0[em] + 4 * a1[em]) // 7
+            alpha_lut[em, 6] = (2 * a0[em] + 5 * a1[em]) // 7
+            alpha_lut[em, 7] = (1 * a0[em] + 6 * a1[em]) // 7
+
+            # 6-value mode interpolation (a0 <= a1)
+            sm = ~eight_mode
+            alpha_lut[sm, 2] = (4 * a0[sm] + 1 * a1[sm]) // 5
+            alpha_lut[sm, 3] = (3 * a0[sm] + 2 * a1[sm]) // 5
+            alpha_lut[sm, 4] = (2 * a0[sm] + 3 * a1[sm]) // 5
+            alpha_lut[sm, 5] = (1 * a0[sm] + 4 * a1[sm]) // 5
+            alpha_lut[sm, 6] = 0
+            alpha_lut[sm, 7] = 255
+
+            # Quick check: if min alpha in any LUT row < threshold, we might have transparency
+            if np.all(np.min(alpha_lut, axis=1) >= threshold):
+                return False  # All possible alpha values >= threshold
+
+            # Extract 48-bit index data for all blocks
+            idx_bytes = arr[:, 2:8]
+            indices_48 = (idx_bytes[:, 0].astype(np.uint64) |
+                         (idx_bytes[:, 1].astype(np.uint64) << 8) |
+                         (idx_bytes[:, 2].astype(np.uint64) << 16) |
+                         (idx_bytes[:, 3].astype(np.uint64) << 24) |
+                         (idx_bytes[:, 4].astype(np.uint64) << 32) |
+                         (idx_bytes[:, 5].astype(np.uint64) << 40))
+
+            # Check each of 16 pixels across all blocks
+            for shift in range(0, 48, 3):
+                pixel_idx = ((indices_48 >> shift) & 0x7).astype(np.int64)
+                # Look up alpha value for each block's pixel
+                pixel_alpha = alpha_lut[np.arange(total_blocks), pixel_idx]
+                if np.any(pixel_alpha < threshold):
+                    return True
 
             return False
 
@@ -748,7 +801,7 @@ def analyze_bgra_alpha(filepath: Path, threshold: int = 255) -> bool:
     """
     Check if an uncompressed BGRA DDS texture has meaningful alpha.
 
-    Uses NumPy for fast vectorized analysis of alpha channel.
+    Uses NumPy for fast array operations on alpha channel.
 
     Returns:
         True if any pixel has alpha < threshold
@@ -792,7 +845,7 @@ def analyze_tga_alpha(filepath: Path, threshold: int = 255) -> bool:
     """
     Check if a 32-bit TGA texture has meaningful alpha.
 
-    Uses NumPy for fast vectorized analysis. Supports uncompressed and RLE TGA.
+    Uses NumPy for fast array/matrix operations. Supports uncompressed and RLE TGA.
 
     Returns:
         True if any pixel has alpha < threshold

@@ -1,4 +1,4 @@
-# OpenMW Normal Map Optimizer
+# OpenMW Normal Map Optimizer v0.10
 
 A high-performance tool for optimizing, fixing, and compressing normal maps for OpenMW.
 
@@ -11,7 +11,7 @@ A high-performance tool for optimizing, fixing, and compressing normal maps for 
 4. **Run a Dry Run** to preview changes (takes only seconds, even for 10,000+ files)
 5. **Process Files** when you're ready
 
-**⚠ DRY RUN IS NOW MANDATORY** - The "Process Files" button is disabled until you run a dry run. This ensures you see what will happen and provides instant processing through analysis caching.
+**⚠ DRY RUN IS NOW MANDATORY** - The "Process Files" button is disabled until you run a dry run. This ensures you see what will happen and provides fast processing through analysis caching.
 
 ## About
 
@@ -19,7 +19,11 @@ If any of the technical details below don't make sense to you and you just want 
 
 ## Features
 
-### Version 0.9 (Current)
+### Version 0.10 (Current)
+- **Simplified UI** - Removed Version Info tab (version history in README)
+- **Shared core integration** - Uses shared texture optimizer core for better maintainability
+
+### Version 0.9
 - **Bugfix for resizing** - Min/max resolution logic now works correctly
 - **Default enforce of power-of-2** - Now enabled by default (expected standard)
 - **More clear UI on resizing** - Added "Ceiling/Floor" labels and "How Downscaling Works" guide
@@ -52,12 +56,11 @@ If any of the technical details below don't make sense to you and you just want 
 
 ## GUI Overview
 
-The application has four tabs:
+The application has three tabs:
 
 1. **📖 READ THIS FIRST** - Help & documentation with format recommendations
 2. **⚙️ Settings** - Configure directories, formats, resize options, and advanced settings
 3. **▶️ Process Files** - Run dry runs and process your normal maps
-4. **📋 Version Info** - Current version features and known issues
 
 ## Important Notes
 
@@ -164,7 +167,11 @@ openmw-normal-map-optimizer/
 
 ## Version History
 
-### Version 0.9 (Current)
+### Version 0.10 (Current)
+- **Simplified UI** - Removed Version Info tab (version history in README)
+- **Shared core integration** - Uses shared texture optimizer core for better maintainability
+
+### Version 0.9
 - **Bugfix for resizing** - Min/max resolution logic now works correctly
 - **Default enforce of power-of-2** - Now enabled by default (expected standard)
 - **More clear UI on resizing** - Added "Ceiling/Floor" labels and "How Downscaling Works" guide
