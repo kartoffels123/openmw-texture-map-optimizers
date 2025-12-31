@@ -15,58 +15,100 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Create Normal Map Optimizer archive
+      - name: Create combined release archive
         run: |
-          cd openmw-normal-map-optimizer
-          zip -r ../openmw-normal-map-optimizer.zip \
-            optimizer.py \
-            README.md \
-            "OpenMW Normal Map Optimizer.bat" \
-            src/ \
-            tools/
-          # Bundle shared core package
-          cd ..
-          zip -ur openmw-normal-map-optimizer.zip \
-            openmw-texture-optimizer-core/src/
+          mkdir -p release-staging
 
-      - name: Create Regular Texture Optimizer archive
-        run: |
-          cd openmw-regular-map-optimizer
-          zip -r ../openmw-regular-map-optimizer.zip \
-            optimizer.py \
-            README.md \
-            "OpenMW Regular Map Optimizer.bat" \
-            src/ \
-            tools/
-          # Bundle shared core package
-          cd ..
-          zip -ur openmw-regular-map-optimizer.zip \
-            openmw-texture-optimizer-core/src/
+          # Copy the three main folders
+          cp -r openmw-normal-map-optimizer release-staging/
+          cp -r openmw-regular-map-optimizer release-staging/
+          cp -r openmw-texture-optimizer-core release-staging/
+
+          # Copy READMEs to root with descriptive names
+          cp openmw-normal-map-optimizer/README.md "release-staging/README - Normal Map Optimizer.md"
+          cp openmw-regular-map-optimizer/README.md "release-staging/README - Regular Texture Optimizer.md"
+
+          # Create release launcher for Normal Map Optimizer
+          cat > "release-staging/OpenMW Normal Map Optimizer.bat" << 'EOF'
+          @echo off
+          REM OpenMW Normal Map Optimizer Launcher
+          REM Double-click this file to start the application
+
+          REM Check if Python is installed
+          python --version >nul 2>&1
+          if errorlevel 1 (
+              echo ERROR: Python is not installed or not in PATH
+              echo Please install Python from https://www.python.org/downloads/
+              echo Make sure to check "Add Python to PATH" during installation
+              pause
+              exit /b 1
+          )
+
+          REM Launch the optimizer
+          python "%~dp0openmw-normal-map-optimizer\optimizer.py"
+
+          REM If there was an error, pause so user can see it
+          if errorlevel 1 (
+              echo.
+              echo An error occurred. Press any key to exit...
+              pause >nul
+          )
+          EOF
+
+          # Create release launcher for Regular Texture Optimizer
+          cat > "release-staging/OpenMW Regular Texture Optimizer.bat" << 'EOF'
+          @echo off
+          REM OpenMW Regular Texture Optimizer Launcher
+          REM Double-click this file to start the application
+
+          REM Check if Python is installed
+          python --version >nul 2>&1
+          if errorlevel 1 (
+              echo ERROR: Python is not installed or not in PATH
+              echo Please install Python from https://www.python.org/downloads/
+              echo Make sure to check "Add Python to PATH" during installation
+              pause
+              exit /b 1
+          )
+
+          REM Launch the optimizer
+          python "%~dp0openmw-regular-map-optimizer\optimizer.py"
+
+          REM If there was an error, pause so user can see it
+          if errorlevel 1 (
+              echo.
+              echo An error occurred. Press any key to exit...
+              pause >nul
+          )
+          EOF
+
+          # Create the zip
+          cd release-staging
+          zip -r ../openmw-texture-optimizers.zip .
 
       - name: Create release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            openmw-normal-map-optimizer.zip
-            openmw-regular-map-optimizer.zip
+            openmw-texture-optimizers.zip
           body: |
             ## OpenMW Texture Optimizers Release
 
-            This release includes:
+            This release includes both tools in a single download:
             - **Normal Map Optimizer v0.10** - For optimizing `_N.dds` and `_NH.dds` normal maps
             - **Regular Texture Optimizer v0.1** - For optimizing all other textures (DDS and TGA)
 
-            Both tools share the same core library for consistency.
-
-            ### Download
-            - `openmw-normal-map-optimizer.zip` - Normal map optimizer with all dependencies
-            - `openmw-regular-map-optimizer.zip` - Regular texture optimizer with all dependencies
-
             ### Quick Start
             1. Extract the zip file
-            2. Double-click the `.bat` file to launch
+            2. Double-click the appropriate `.bat` file to launch:
+               - `OpenMW Normal Map Optimizer.bat` - For normal maps
+               - `OpenMW Regular Texture Optimizer.bat` - For regular textures
             3. Configure input/output directories
             4. Run a Dry Run to preview changes
             5. Process files when ready
+
+            ### Documentation
+            - `README - Normal Map Optimizer.md` - Documentation for normal map optimization
+            - `README - Regular Texture Optimizer.md` - Documentation for regular texture optimization
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

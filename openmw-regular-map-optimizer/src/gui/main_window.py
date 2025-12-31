@@ -62,7 +62,7 @@ class RegularTextureProcessorGUI:
         self.uniform_weighting = tk.BooleanVar(value=False)
         self.use_dithering = tk.BooleanVar(value=False)
         self.use_small_texture_override = tk.BooleanVar(value=True)
-        self.small_texture_threshold = tk.IntVar(value=128)
+        self.small_texture_threshold = tk.IntVar(value=256)
         self.enable_parallel = tk.BooleanVar(value=True)
         self.max_workers = tk.IntVar(value=max(1, cpu_count() - 1))
         self.enforce_power_of_2 = tk.BooleanVar(value=True)
