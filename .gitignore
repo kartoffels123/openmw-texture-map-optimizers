@@ -4,9 +4,11 @@ test-in/*
 test-out/*
 .claude
 *.dds
+
 # User-specific settings and reports
 openmw-normal-map-optimizer/optimizer_settings*.json
 openmw-normal-map-optimizer/verification_report*.txt
+openmw-mo2-integrator/example_mo2_structure/*
 
 # Python cache files
 __pycache__/

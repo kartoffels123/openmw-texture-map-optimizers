@@ -1,4 +1,4 @@
-# OpenMW Regular Texture Optimizer v0.1
+# OpenMW Regular Texture Optimizer v0.2
 
 A high-performance tool for optimizing and compressing regular (non-normal map) textures for OpenMW.
 
@@ -225,6 +225,19 @@ Alpha Optimization adds analysis time during dry run:
 - Reads texture data to check actual alpha values
 - Detects BC1 blocks using DXT1a mode
 - Worth it for accurate format selection and smaller output
+
+## Version History
+
+### Version 0.2 (Current)
+- **DX10 header stripping** - Cuttlefish outputs DX10 extended headers which OpenMW doesn't support; these are now automatically stripped and converted to legacy DDS format
+- **BGRA moved to texconv** - Uncompressed BGRA textures now use texconv instead of cuttlefish for proper legacy DDS output
+- **Proper alpha handling** - Added `-alpha -sepalpha` flags for straight alpha and proper mipmap generation without color bleeding
+
+### Version 0.1
+- Initial release with cuttlefish compression for BC1/BC2/BC3 and texconv for BGR
+- Alpha channel optimization and DXT1a detection
+- Smart passthrough for well-compressed textures
+- Path filtering with whitelist/blacklist system
 
 ## Resources
 

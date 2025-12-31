@@ -47,6 +47,15 @@ _base_settings = _import_shared_module("base_settings")
 BaseProcessingSettings = _base_settings.BaseProcessingSettings
 
 
+# Default paths to exclude entirely (UI elements, special files)
+# These are the same as regular textures - normal maps in these folders are also excluded
+DEFAULT_BLACKLIST = [
+    "icon", "icons", "bookart",  # Original defaults
+    "menu_", "tx_menu_",         # Menu textures
+    "cursor", "compass", "target",  # UI elements
+]
+
+
 @dataclass
 class NormalSettings(BaseProcessingSettings):
     """Configuration for normal map processing"""
@@ -72,8 +81,22 @@ class NormalSettings(BaseProcessingSettings):
     # Passthrough output control
     copy_passthrough_files: bool = False  # Copy well-compressed files to output (vs skip them)
 
+    # Path filtering
+    path_whitelist: list = None  # Default: ["Textures"]
+    path_blacklist: list = None  # Default: folders to exclude entirely
+    custom_blacklist: list = None  # User-added blacklist entries
+
     # Override defaults from base
     uniform_weighting: bool = True  # Default ON for normal maps
+
+    def __post_init__(self):
+        """Set default lists after initialization"""
+        if self.path_whitelist is None:
+            self.path_whitelist = ["Textures"]
+        if self.path_blacklist is None:
+            self.path_blacklist = DEFAULT_BLACKLIST.copy()
+        if self.custom_blacklist is None:
+            self.custom_blacklist = []
 
     def to_dict(self) -> dict:
         """Convert settings to dictionary for multiprocessing"""
@@ -91,5 +114,8 @@ class NormalSettings(BaseProcessingSettings):
             'auto_optimize_n_alpha': self.auto_optimize_n_alpha,
             'allow_compressed_passthrough': self.allow_compressed_passthrough,
             'copy_passthrough_files': self.copy_passthrough_files,
+            'path_whitelist': self.path_whitelist,
+            'path_blacklist': self.path_blacklist,
+            'custom_blacklist': self.custom_blacklist,
         })
         return base_dict

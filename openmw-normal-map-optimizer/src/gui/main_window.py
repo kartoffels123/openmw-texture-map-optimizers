@@ -22,6 +22,7 @@ from src.core import (
     get_parser_stats,
     reset_parser_stats
 )
+from src.core.normal_settings import DEFAULT_BLACKLIST
 
 
 class NormalMapProcessorGUI:
@@ -76,6 +77,14 @@ class NormalMapProcessorGUI:
         # Power-of-2 enforcement
         self.enforce_power_of_2 = tk.BooleanVar(value=True)
 
+        # Filtering settings
+        self.use_path_whitelist = tk.BooleanVar(value=True)
+        self.use_path_blacklist = tk.BooleanVar(value=True)
+        self.custom_blacklist = tk.StringVar(value="")
+
+        # For storing filter stats
+        self.last_filter_stats = None
+
         self.create_widgets()
 
         # Attach change callbacks AFTER widgets are created to avoid triggering during init
@@ -85,7 +94,8 @@ class NormalMapProcessorGUI:
                     self.small_nh_threshold, self.small_n_threshold, self.preserve_compressed_format,
                     self.auto_fix_nh_to_n, self.auto_optimize_n_alpha, self.allow_compressed_passthrough,
                     self.copy_passthrough_files, self.enable_atlas_downscaling, self.atlas_max_resolution,
-                    self.enforce_power_of_2]:
+                    self.enforce_power_of_2, self.use_path_whitelist, self.use_path_blacklist,
+                    self.custom_blacklist]:
             var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
@@ -183,7 +193,7 @@ class NormalMapProcessorGUI:
             "produces nearly identical results (e.g., PSNR ~50 dB, MSE ~0.05) as long as\n"
             "no intermediate operation (e.g., resizing, color changes) is occurring.\n\n"
             "Want to avoid reprocessing entirely? Enable \"Allow well-compressed textures\n"
-            "to passthrough\" in Settings > Smart Format Handling.\n\n"
+            "to passthrough\" in Settings > Basic Settings > Passthrough Options.\n\n"
             "Valid reasons to process already-compressed textures:\n"
             "• Resizing (downscaling/upscaling) - the main use case\n"
             "• Fixing broken mipmaps or Z channels - surprisingly common\n"
@@ -386,14 +396,17 @@ class NormalMapProcessorGUI:
         settings_notebook.pack(fill="both", expand=True, padx=5, pady=5)
 
         tab_basic = ttk.Frame(settings_notebook)
+        tab_filtering = ttk.Frame(settings_notebook)
         tab_advanced = ttk.Frame(settings_notebook)
         tab_smart_format = ttk.Frame(settings_notebook)
 
         settings_notebook.add(tab_basic, text="Basic Settings")
+        settings_notebook.add(tab_filtering, text="Filtering")
         settings_notebook.add(tab_advanced, text="Advanced")
         settings_notebook.add(tab_smart_format, text="Smart Format Handling")
 
         self._create_basic_settings(tab_basic)
+        self._create_filtering_settings(tab_filtering)
         self._create_advanced_settings(tab_advanced)
         self._create_smart_format_settings(tab_smart_format)
 
@@ -516,6 +529,67 @@ class NormalMapProcessorGUI:
         min_res_combo.grid(row=5, column=1, sticky="w", padx=10, pady=5)
         ttk.Label(frame_resize, text="(0 = disabled)",
                  font=("", 8, "italic")).grid(row=5, column=2, sticky="w", columnspan=2)
+
+        # Passthrough Option
+        frame_passthrough = ttk.LabelFrame(scrollable, text="Passthrough Options", padding=10)
+        frame_passthrough.pack(fill="x", padx=10, pady=5)
+
+        ttk.Checkbutton(frame_passthrough, text="Allow well-compressed textures to passthrough",
+                       variable=self.allow_compressed_passthrough).grid(row=0, column=0, columnspan=3, sticky="w", pady=2)
+        ttk.Label(frame_passthrough,
+                 text="Skips reprocessing for well-compressed textures (NH in BC3, N in BC5/BC1).\n\n"
+                      "Why enable? Smaller output - fewer files written to disk.\n"
+                      "Why disable? Fixes potential Z-channel/mipmap issues. Several mods have these problems,\n"
+                      "but they're often subtle. If you don't notice visual issues, passthrough saves disk space.\n"
+                      "It's up to you, if you have more disk space I'd leave it off. They have the same performance in-game.",
+                 font=("", 8), wraplength=600, justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=2)
+
+    def _create_filtering_settings(self, parent):
+        """Create filtering settings tab"""
+        canvas = tk.Canvas(parent, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        scrollable = ttk.Frame(canvas)
+        scrollable.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scrollable, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        # Explanation
+        frame_info = ttk.LabelFrame(scrollable, text="Path Filtering", padding=10)
+        frame_info.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_info,
+                 text="Controls which normal map files are included for processing.\n"
+                      "Files that don't pass filtering are skipped entirely (not in output).",
+                 font=("", 9), wraplength=self.WRAPLENGTH).pack(anchor="w")
+
+        # Whitelist
+        frame_white = ttk.LabelFrame(scrollable, text="Path Whitelist", padding=10)
+        frame_white.pack(fill="x", padx=10, pady=5)
+        ttk.Checkbutton(frame_white, text="Only process paths containing a 'Textures' directory",
+                       variable=self.use_path_whitelist).pack(anchor="w")
+        ttk.Label(frame_white,
+                 text="Ensures only game texture files are processed, skipping stray files outside the Textures folder.",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        # Blacklist
+        frame_black = ttk.LabelFrame(scrollable, text="Path Blacklist (Skip Entirely)", padding=10)
+        frame_black.pack(fill="x", padx=10, pady=5)
+        blacklist_str = ", ".join(DEFAULT_BLACKLIST)
+        ttk.Checkbutton(frame_black, text=f"Skip paths containing: {blacklist_str}",
+                       variable=self.use_path_blacklist).pack(anchor="w")
+        ttk.Label(frame_black,
+                 text="These paths typically contain UI elements, icons, and other non-3D textures\n"
+                      "that should not be processed as normal maps.",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
+        ttk.Label(frame_black, text="Custom blacklist (comma-separated):").pack(anchor="w", pady=(10, 0))
+        ttk.Entry(frame_black, textvariable=self.custom_blacklist, width=50).pack(anchor="w", pady=5)
+        ttk.Label(frame_black,
+                 text="Add additional path patterns to skip (e.g., 'mymod_backup, test_textures')",
+                 font=("", 8)).pack(anchor="w")
 
     def _create_advanced_settings(self, parent):
         """Create advanced settings sub-tab"""
@@ -690,23 +764,17 @@ class NormalMapProcessorGUI:
                  text="N textures stored in BGRA→your N format setting (BC5/BC1/BGR) or BC3→BC1 to remove wasted alpha channel. Reduces file size without quality loss.",
                  font=("", 8), wraplength=600, justify="left").grid(row=5, column=0, columnspan=3, sticky="w", pady=2)
 
-        ttk.Checkbutton(frame_smart_format, text="Allow well-compressed textures to passthrough (NOT recommended)",
-                       variable=self.allow_compressed_passthrough).grid(row=6, column=0, columnspan=3, sticky="w", pady=2)
-        ttk.Label(frame_smart_format,
-                 text="⚠ When enabled, correctly-compressed textures skip reprocessing. NH in BC3 and N in BC5/BC1 pass through. Mislabeled NH in BC5/BC1 are renamed to _N. Only N in BC3 (wasted alpha) are reprocessed. Skips Z-channel reconstruction and mipmap regeneration. Use 'Copy passthrough files' below to control whether skipped files are copied to output or left in place.",
-                 font=("", 8), wraplength=600, justify="left", foreground="red").grid(row=7, column=0, columnspan=3, sticky="w", pady=2)
-
         ttk.Checkbutton(frame_smart_format, text="Copy passthrough files to output",
-                       variable=self.copy_passthrough_files).grid(row=8, column=0, columnspan=3, sticky="w", pady=2)
+                       variable=self.copy_passthrough_files).grid(row=6, column=0, columnspan=3, sticky="w", pady=2)
         ttk.Label(frame_smart_format,
                  text="When enabled, passthrough files are copied to output directory. When disabled, they are skipped entirely (saves disk space, output only contains modified textures).",
-                 font=("", 8), wraplength=600, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=2)
+                 font=("", 8), wraplength=600, justify="left").grid(row=7, column=0, columnspan=3, sticky="w", pady=2)
 
-        ttk.Label(frame_smart_format, text="", font=("", 2)).grid(row=10, column=0, columnspan=3, sticky="w")
+        ttk.Label(frame_smart_format, text="", font=("", 2)).grid(row=8, column=0, columnspan=3, sticky="w")
 
         ttk.Label(frame_smart_format,
                  text="Decision Priority Order:\n"
-                      "0. Compressed passthrough (if enabled - copies well-compressed only)\n"
+                      "0. Compressed passthrough (if enabled in Basic Settings)\n"
                       "   • NH in BC3 → passthrough ✓\n"
                       "   • N in BC5/BC1 → passthrough ✓\n"
                       "   • NH in BC5/BC1 → passthrough + rename to _N ✓\n"
@@ -716,7 +784,7 @@ class NormalMapProcessorGUI:
                       "3. Preserve compressed formats when not downscaling\n"
                       "4. Auto-optimize formats with wasted alpha\n"
                       "5. Small texture override (only for uncompressed sources)",
-                 font=("", 8), wraplength=600, justify="left").grid(row=11, column=0, columnspan=3, sticky="w", pady=(5, 2))
+                 font=("", 8), wraplength=600, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=(5, 2))
 
         # Texture Atlas Settings (Collapsible)
         frame_atlas = ttk.LabelFrame(scrollable, text="Texture Atlas Settings (Advanced)", padding=10)
@@ -861,6 +929,11 @@ class NormalMapProcessorGUI:
 
     def get_settings(self) -> ProcessingSettings:
         """Convert GUI variables to ProcessingSettings object"""
+        # Build whitelist/blacklist based on UI settings
+        whitelist = ["Textures"] if self.use_path_whitelist.get() else []
+        blacklist = DEFAULT_BLACKLIST.copy() if self.use_path_blacklist.get() else []
+        custom = [x.strip().lower() for x in self.custom_blacklist.get().split(",") if x.strip()]
+
         return ProcessingSettings(
             n_format=self.n_format.get(),
             nh_format=self.nh_format.get(),
@@ -885,7 +958,10 @@ class NormalMapProcessorGUI:
             copy_passthrough_files=self.copy_passthrough_files.get(),
             enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
             atlas_max_resolution=self.atlas_max_resolution.get(),
-            enforce_power_of_2=self.enforce_power_of_2.get()
+            enforce_power_of_2=self.enforce_power_of_2.get(),
+            path_whitelist=whitelist,
+            path_blacklist=blacklist,
+            custom_blacklist=custom
         )
 
     def start_analysis(self):
@@ -952,8 +1028,44 @@ class NormalMapProcessorGUI:
 
             results = self.processor.analyze_files(input_dir, progress_callback)
 
+            # Display filter statistics if available
+            if hasattr(self.processor, 'filter_stats'):
+                stats = self.processor.filter_stats
+                self.last_filter_stats = stats
+                total_found = stats.get('total_normal_maps_found', 0)
+                excluded_whitelist = stats.get('excluded_whitelist', 0)
+                excluded_blacklist = stats.get('excluded_blacklist', 0)
+                total_excluded = excluded_whitelist + excluded_blacklist
+
+                if total_excluded > 0:
+                    self.log(f"=== Filter Results ===")
+                    self.log(f"Total normal map files scanned: {total_found}")
+                    self.log(f"Included for processing: {stats.get('included', len(results))}")
+                    self.log(f"Excluded: {total_excluded}")
+
+                    if excluded_whitelist > 0:
+                        self.log(f"  - Not in 'Textures' folder: {excluded_whitelist}")
+                        examples = stats.get('whitelist_examples', [])
+                        for ex in examples[:3]:
+                            self.log(f"      {ex}")
+                        if len(examples) > 3:
+                            self.log(f"      ... and {excluded_whitelist - 3} more")
+
+                    if excluded_blacklist > 0:
+                        self.log(f"  - Blacklisted paths: {excluded_blacklist}")
+                        examples = stats.get('blacklist_examples', [])
+                        for ex in examples[:3]:
+                            self.log(f"      {ex}")
+                        if len(examples) > 3:
+                            self.log(f"      ... and {excluded_blacklist - 3} more")
+                    self.log("")
+
             if not results:
                 self.log("No normal map files found!")
+                self.log("\nMake sure your input directory contains:")
+                self.log("  - .dds files ending in _n or _nh")
+                self.log("  - A 'Textures' folder in the path (if whitelist enabled)")
+                self.log("  - No blacklisted path components (if blacklist enabled)")
                 messagebox.showinfo("Dry Run Complete", "No normal map files found")
                 return
 
@@ -1338,14 +1450,36 @@ class NormalMapProcessorGUI:
             output_dir = Path(self.output_dir.get())
 
             n_files, nh_files = self.processor.find_normal_maps(input_dir)
-            total_files = len(n_files) + len(nh_files)
+            found_files = len(n_files) + len(nh_files)
 
             self.log(f"Found {len(nh_files)} _nh.dds file(s)")
             self.log(f"Found {len(n_files)} _n.dds file(s)")
-            self.log(f"Total: {total_files} normal map file(s)\n")
+            self.log(f"Total: {found_files} normal map file(s)\n")
+
+            if found_files == 0:
+                messagebox.showinfo("No Files", "No normal map files found")
+                return
+
+            # Filter out passthrough files if copy_passthrough_files is disabled
+            # This matches what the processor will actually process
+            copy_passthrough = self.processor.settings.copy_passthrough_files
+            if not copy_passthrough:
+                def should_process(f):
+                    rel_path = str(f.relative_to(input_dir))
+                    cached = self.processor._get_cached_analysis(rel_path)
+                    if cached and cached.get('is_passthrough', False):
+                        return False
+                    return True
+                n_files = [f for f in n_files if should_process(f)]
+                nh_files = [f for f in nh_files if should_process(f)]
+                passthrough_count = found_files - len(n_files) - len(nh_files)
+                if passthrough_count > 0:
+                    self.log(f"Skipping {passthrough_count} passthrough file(s) (already optimized)\n")
+
+            total_files = len(n_files) + len(nh_files)
 
             if total_files == 0:
-                messagebox.showinfo("No Files", "No normal map files found")
+                messagebox.showinfo("No Files", "All files are passthrough (already optimized). Nothing to process.")
                 return
 
             # Initialize progress

@@ -6,6 +6,7 @@ import json
 
 # Import normalize_format from utils to avoid duplication
 from .utils import normalize_format
+from .dds_parser import has_dx10_header
 
 
 def verify_analysis_vs_output(
@@ -119,6 +120,15 @@ def verify_analysis_vs_output(
                 'file': rel_path,
                 'type': 'MISSING',
                 'message': 'Output file not created'
+            })
+            continue
+
+        # Check for DX10 header - we don't want these (OpenMW doesn't support them)
+        if has_dx10_header(output_file):
+            mismatches.append({
+                'file': rel_path,
+                'type': 'DX10_HEADER',
+                'message': 'Output file has DX10 extended header (not supported by OpenMW)'
             })
             continue
 

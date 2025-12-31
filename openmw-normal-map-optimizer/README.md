@@ -1,4 +1,4 @@
-# OpenMW Normal Map Optimizer v0.10
+# OpenMW Normal Map Optimizer v0.11
 
 A high-performance tool for optimizing, fixing, and compressing normal maps for OpenMW.
 
@@ -19,37 +19,20 @@ If any of the technical details below don't make sense to you and you just want 
 
 ## Features
 
-### Version 0.10 (Current)
-- **Simplified UI** - Removed Version Info tab (version history in README)
-- **Shared core integration** - Uses shared texture optimizer core for better maintainability
-
-### Version 0.9
-- **Bugfix for resizing** - Min/max resolution logic now works correctly
-- **Default enforce of power-of-2** - Now enabled by default (expected standard)
-- **More clear UI on resizing** - Added "Ceiling/Floor" labels and "How Downscaling Works" guide
-- **More clear analysis on resizing** - Better messaging about min/max protection
-
-### Version 0.8
-- **Analysis caching** - Headers read once during dry run, reused during processing for instant start
-- **Mandatory dry run** - Process Files button disabled until dry run completes (don't worry, takes only seconds!)
-- **Auto-cache invalidation** - Settings changes automatically invalidate cache and prompt re-analysis
-- **Texture atlas protection** - Auto-detects and preserves atlases (filename contains "atlas" or in ATL directory)
-- **Smart resolution warnings** - Shows whether current settings will auto-fix oversized/undersized textures
-- **Cleaner output** - Consolidated sections, better terminology ("Recalculate" vs "Convert")
-- **Performance optimizations** - Stores only 5 file examples instead of full lists (fast on 10k+ files)
-
 ### Core Features
 - **Batch processing** of normal maps (`_N.dds` and `_NH.dds`)
 - **Format conversion** (BC5/ATI2, BC3/DXT5, BC1/DXT1, BGRA, BGR)
 - **Texture downscaling** with quality filters and resolution constraints
 - **Z-channel reconstruction** for proper normal mapping
 - **Y flip conversion** (OpenGL ↔ DirectX normal maps)
+- **Path filtering** - Whitelist and blacklist support for selective processing
 - **Smart small texture handling** - Avoids over-compressing tiny textures
-- **Smart format preservation** - Keeps compressed formats when not downscaling (v0.5)
-- **Auto-fix mislabeled NH→N textures** - Detects BGR/BC5/BC1 formats on NH files (v0.5)
-- **Auto-optimize N textures** - Removes wasted alpha channels (BGRA→BC5, BC3→BC1) (v0.5)
-- **Comprehensive warning system** - Shows potential issues before processing (v0.5)
+- **Smart format preservation** - Keeps compressed formats when not downscaling
+- **Auto-fix mislabeled NH→N textures** - Detects BGR/BC5/BC1 formats on NH files
+- **Auto-optimize N textures** - Removes wasted alpha channels (BGRA→BC5, BC3→BC1)
+- **Comprehensive warning system** - Shows potential issues before processing
 - **Dry run analysis** with size projections and detailed conversion breakdown
+- **Texture atlas protection** - Auto-detects and preserves atlases
 - **Detailed processing logs** and statistics
 - **Export analysis reports** to text files
 - **Parallel processing** - Multi-core support for faster batch operations
@@ -98,7 +81,7 @@ The application has three tabs:
 ### Note on Recompression
 Usually pretty harmless! "Double compression" produces nearly identical results (e.g., PSNR ~50 dB, MSE ~0.05) as long as no intermediate operation (e.g., resizing, color changes) is occurring.
 
-**Want to avoid reprocessing entirely?** Enable "Allow well-compressed textures to passthrough" in Settings > Smart Format Handling.
+**Want to avoid reprocessing entirely?** Enable "Allow well-compressed textures to passthrough" in Settings > Basic Settings > Passthrough Options.
 
 ### Valid Reasons to Process Already-Compressed Textures
 - **Resizing** (downscaling/upscaling) - the main use case
@@ -167,7 +150,15 @@ openmw-normal-map-optimizer/
 
 ## Version History
 
-### Version 0.10 (Current)
+### Version 0.11 (Current)
+- **Proper alpha handling** - Changed from `-alpha` to `-alpha -sepalpha` for straight alpha and proper mipmap generation without color bleeding
+- **Progress bar fix** - Fixed progress bar not filling up when passthrough files are skipped
+- **Parallel processing fix** - Progress callback now called correctly on exceptions during parallel processing
+- **Path filtering** - Whitelist (Textures folder) and blacklist (icon, bookart, menu, etc.) support
+- **Filtering tab** - New Settings tab to configure path filtering options
+- **Passthrough option moved** - "Allow well-compressed textures to passthrough" now in Basic Settings
+
+### Version 0.10
 - **Simplified UI** - Removed Version Info tab (version history in README)
 - **Shared core integration** - Uses shared texture optimizer core for better maintainability
 

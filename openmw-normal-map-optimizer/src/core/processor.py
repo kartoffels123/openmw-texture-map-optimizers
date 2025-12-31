@@ -55,6 +55,7 @@ def _import_shared_module(module_name):
 
 # Import shared core modules
 _dds_parser = _import_shared_module("dds_parser")
+_file_scanner = _import_shared_module("file_scanner")
 _base_settings = _import_shared_module("base_settings")
 _utils = _import_shared_module("utils")
 
@@ -62,6 +63,7 @@ _utils = _import_shared_module("utils")
 parse_dds_header = _dds_parser.parse_dds_header
 get_parser_stats = _dds_parser.get_parser_stats
 reset_parser_stats = _dds_parser.reset_parser_stats
+FileScanner = _file_scanner.FileScanner
 ProcessingResult = _base_settings.ProcessingResult
 AnalysisResult = _base_settings.AnalysisResult
 format_size = _utils.format_size
@@ -241,7 +243,8 @@ def _process_normal_map(input_dds: Path, output_dds: Path, is_nh: bool, settings
             TEXCONV_EXE,
             "-f", texconv_format,
             "-m", "0",
-            "-alpha",
+            "-alpha",     # Straight alpha (not premultiplied)
+            "-sepalpha",  # Process alpha separately during mipmap generation
             "-dx9"
         ]
 
@@ -561,10 +564,41 @@ class NormalMapProcessor:
         self.analysis_cache: Dict[str, AnalysisResult] = {}
         self._settings_hash = None
 
-    def find_normal_maps(self, input_dir: Path) -> Tuple[List[Path], List[Path]]:
+        # Initialize file scanner with path filtering
+        whitelist = settings.path_whitelist if hasattr(settings, 'path_whitelist') else ["Textures"]
+        blacklist = settings.path_blacklist if hasattr(settings, 'path_blacklist') else ["icon", "icons", "bookart"]
+
+        # Add custom blacklist items
+        if hasattr(settings, 'custom_blacklist') and settings.custom_blacklist:
+            blacklist = list(blacklist) + list(settings.custom_blacklist)
+
+        self.scanner = FileScanner(
+            path_whitelist=whitelist,
+            path_blacklist=blacklist
+        )
+
+    def find_normal_maps(self, input_dir: Path, track_filtered: bool = False) -> Tuple[List[Path], List[Path]]:
         """
         Find all normal map files in directory. Returns (n_files, nh_files)
+
+        - Includes: .dds files ending in _n or _nh (normal maps)
+        - Applies: Path whitelist (Textures) and blacklist (icon, icons, bookart)
+
+        If track_filtered=True, also populates self.filter_stats with counts.
         """
+        # Initialize filter stats if tracking
+        if track_filtered:
+            self.filter_stats = {
+                'total_normal_maps_found': 0,
+                'included': 0,
+                'excluded_whitelist': 0,
+                'excluded_blacklist': 0,
+                'blacklist_examples': [],
+                'whitelist_examples': [],
+                # Full lists for export
+                'blacklist_files': [],
+            }
+
         is_case_sensitive = platform.system() != 'Windows'
 
         if is_case_sensitive:
@@ -575,14 +609,53 @@ class NormalMapProcessor:
             nh_candidates = list(input_dir.rglob("*_nh.dds"))
             n_candidates = list(input_dir.rglob("*_n.dds"))
 
-        nh_files = list(set(nh_candidates))
-        n_files = [f for f in set(n_candidates) if not f.stem.lower().endswith('_nh')]
+        nh_files_raw = list(set(nh_candidates))
+        n_files_raw = [f for f in set(n_candidates) if not f.stem.lower().endswith('_nh')]
+
+        if track_filtered:
+            self.filter_stats['total_normal_maps_found'] = len(n_files_raw) + len(nh_files_raw)
+
+        # Apply whitelist/blacklist filtering
+        whitelist = self.scanner.path_whitelist
+        blacklist = self.scanner.path_blacklist
+
+        def filter_file(f: Path) -> bool:
+            """Return True if file should be included"""
+            path_parts = [p.lower() for p in f.parts]
+
+            # Check whitelist
+            if whitelist:
+                if not any(any(w in part for part in path_parts) for w in whitelist):
+                    if track_filtered:
+                        self.filter_stats['excluded_whitelist'] += 1
+                        if len(self.filter_stats['whitelist_examples']) < 5:
+                            self.filter_stats['whitelist_examples'].append(str(f.relative_to(input_dir)))
+                    return False
+
+            # Check blacklist
+            if blacklist:
+                for blocked in blacklist:
+                    if any(blocked in part for part in path_parts):
+                        if track_filtered:
+                            self.filter_stats['excluded_blacklist'] += 1
+                            self.filter_stats['blacklist_files'].append(str(f.relative_to(input_dir)))
+                            if len(self.filter_stats['blacklist_examples']) < 5:
+                                self.filter_stats['blacklist_examples'].append(str(f.relative_to(input_dir)))
+                        return False
+
+            return True
+
+        n_files = [f for f in n_files_raw if filter_file(f)]
+        nh_files = [f for f in nh_files_raw if filter_file(f)]
+
+        if track_filtered:
+            self.filter_stats['included'] = len(n_files) + len(nh_files)
 
         return n_files, nh_files
 
     def analyze_files(self, input_dir: Path, progress_callback: Optional[Callable[[int, int], None]] = None) -> List[AnalysisResult]:
         """Analyze all normal maps and return analysis results. Results are cached for processing."""
-        n_files, nh_files = self.find_normal_maps(input_dir)
+        n_files, nh_files = self.find_normal_maps(input_dir, track_filtered=True)
         all_files = n_files + nh_files
 
         if not all_files:
@@ -741,6 +814,8 @@ class NormalMapProcessor:
                         error_msg=str(e)
                     )
                     results.append(error_result)
+                    if progress_callback:
+                        progress_callback(current, total, error_result)
 
         return results
 

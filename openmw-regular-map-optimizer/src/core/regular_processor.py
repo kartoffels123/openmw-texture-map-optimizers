@@ -67,6 +67,7 @@ parse_tga_header = _dds_parser.parse_tga_header
 parse_tga_header_extended = _dds_parser.parse_tga_header_extended
 has_meaningful_alpha = _dds_parser.has_meaningful_alpha
 analyze_bc1_alpha = _dds_parser.analyze_bc1_alpha
+strip_dx10_headers_batch = _dds_parser.strip_dx10_headers_batch
 
 # Re-export file scanner
 FileScanner = _file_scanner.FileScanner
@@ -105,15 +106,14 @@ REGULAR_FORMAT_MAP = {
     "BGR": "B8G8R8X8_UNORM"
 }
 
-# Cuttlefish format mapping
+# Cuttlefish format mapping (BC formats only)
 # BC1_RGB = opaque (no alpha), BC1_RGBA = 1-bit alpha
-# Note: BGR uses texconv fallback since cuttlefish can't write 24-bit DDS
+# Note: BGR and BGRA use texconv - cuttlefish outputs DX10 headers for uncompressed
 CUTTLEFISH_FORMAT_MAP = {
     "BC1/DXT1": "BC1_RGB",      # Use BC1_RGB for opaque textures
     "BC1/DXT1a": "BC1_RGBA",    # Use BC1_RGBA for 1-bit alpha (punchthrough)
     "BC2/DXT3": "BC2",          # 4-bit alpha
     "BC3/DXT5": "BC3",          # Interpolated alpha
-    "BGRA": "B8G8R8A8",         # Uncompressed with alpha
 }
 
 # Cuttlefish filter mapping (for resize operations)
@@ -218,8 +218,8 @@ def _process_texture_with_texconv(input_path: Path, output_path: Path, target_fo
                                    new_width: int, new_height: int, will_resize: bool,
                                    skip_mipmaps: bool, settings: dict) -> Tuple[bool, Optional[str]]:
     """
-    Process texture using texconv (legacy tool).
-    Used for BGR (24-bit) textures since cuttlefish can't write 24-bit DDS.
+    Process texture using texconv.
+    Used for BGR/BGRA uncompressed formats (cuttlefish outputs DX10 headers for these).
     """
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -234,6 +234,11 @@ def _process_texture_with_texconv(input_path: Path, output_path: Path, target_fo
             "-f", texconv_format,
             "-o", str(output_path.parent),
         ]
+
+        # Alpha handling for BGRA - straight alpha, processed separately during mipmap generation
+        # This prevents color bleeding and keeps alpha non-premultiplied
+        if target_format == "BGRA":
+            cmd.extend(["-alpha", "-sepalpha"])
 
         # Resize if needed
         if will_resize:
@@ -376,14 +381,15 @@ def _process_texture_static(input_path: Path, output_path: Path, settings: dict,
         # Check if mipmaps should be skipped for this file
         skip_mipmaps = _should_skip_mipmaps(input_path, settings)
 
-        # === Use texconv for BGR (24-bit) - cuttlefish can't write 24-bit DDS ===
-        if target_format == "BGR":
+        # === Use texconv for uncompressed formats (BGR/BGRA) ===
+        # Cuttlefish outputs DX10 headers for these, texconv writes legacy DDS
+        if target_format in ("BGR", "BGRA"):
             return _process_texture_with_texconv(
                 input_path, output_path, target_format,
                 new_width, new_height, will_resize, skip_mipmaps, settings
             )
 
-        # === Use cuttlefish for everything else (better PSNR) ===
+        # === Use cuttlefish for BC formats (better PSNR) ===
         cuttlefish_format = CUTTLEFISH_FORMAT_MAP.get(target_format, "BC1_RGB")
 
         # Build cuttlefish command
@@ -951,6 +957,14 @@ class RegularTextureProcessor:
                 results.append(result)
                 if progress_callback:
                     progress_callback(i, total, result)
+
+        # Post-processing: strip DX10 headers from cuttlefish output
+        # Cuttlefish writes DX10 headers for BC formats which OpenMW doesn't support
+        stripped, skipped, warnings = strip_dx10_headers_batch(output_dir)
+        if warnings:
+            # Log warnings but don't fail - these are non-critical
+            for warning in warnings:
+                print(f"DX10 strip warning: {warning}")
 
         return results
 

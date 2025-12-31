@@ -976,6 +976,156 @@ def has_meaningful_alpha(filepath: Path, format_str: str, threshold: int = 255) 
     return False
 
 
+# =============================================================================
+# DX10 Header Stripping (for legacy compatibility)
+# =============================================================================
+
+# DXGI format code -> legacy FourCC for BC formats only
+# Cuttlefish outputs DX10 headers which OpenMW doesn't support
+DXGI_TO_LEGACY_FOURCC = {
+    71: FOURCC_DXT1,   # BC1_UNORM -> DXT1
+    72: FOURCC_DXT1,   # BC1_UNORM_SRGB -> DXT1
+    74: FOURCC_DXT3,   # BC2_UNORM -> DXT3
+    75: FOURCC_DXT3,   # BC2_UNORM_SRGB -> DXT3
+    77: FOURCC_DXT5,   # BC3_UNORM -> DXT5
+    78: FOURCC_DXT5,   # BC3_UNORM_SRGB -> DXT5
+}
+
+
+def has_dx10_header(filepath: Path) -> bool:
+    """
+    Check if a DDS file has a DX10 extended header.
+
+    Args:
+        filepath: Path to DDS file
+
+    Returns:
+        True if file has DX10 header, False otherwise
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            data = f.read(88)
+
+        if len(data) < 88:
+            return False
+
+        if data[0:4] != b'DDS ':
+            return False
+
+        pf_fourcc = struct.unpack('<I', data[84:88])[0]
+        return pf_fourcc == FOURCC_DX10
+
+    except Exception:
+        return False
+
+
+def strip_dx10_header(filepath: Path) -> Tuple[bool, Optional[str]]:
+    """
+    Strip the DX10 extended header from a DDS file, converting to legacy format.
+
+    Only supports BC1/BC2/BC3 formats (what cuttlefish outputs for us).
+    Returns a warning for unexpected DX10 formats.
+
+    DDS structure:
+    - 4 bytes: Magic "DDS "
+    - 124 bytes: DDS_HEADER (pixel format at offset 76, FourCC at offset 84)
+    - 20 bytes: DDS_HEADER_DXT10 (only if FourCC == "DX10")
+    - N bytes: Pixel data
+
+    Args:
+        filepath: Path to DDS file to modify (in-place)
+
+    Returns:
+        (True, None) on success
+        (True, warning_message) if unexpected format (file unchanged)
+        (False, error_message) on failure
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            data = bytearray(f.read())
+
+        if len(data) < 148:
+            return True, None  # Too small to have DX10 header
+
+        # Check magic
+        if data[0:4] != b'DDS ':
+            return False, "Not a valid DDS file"
+
+        # Check if DX10 header present (FourCC at offset 84)
+        pf_fourcc = struct.unpack('<I', data[84:88])[0]
+
+        if pf_fourcc != FOURCC_DX10:
+            return True, None  # No DX10 header, nothing to do
+
+        # Read DXGI format from DX10 header (at byte 128)
+        dxgi_format = struct.unpack('<I', data[128:132])[0]
+
+        # Only handle BC1/BC2/BC3
+        if dxgi_format not in DXGI_TO_LEGACY_FOURCC:
+            format_name = DXGI_FORMAT_NAMES.get(dxgi_format, f'DXGI_{dxgi_format}')
+            return True, f"Unexpected DX10 format {format_name} - file unchanged"
+
+        legacy_fourcc = DXGI_TO_LEGACY_FOURCC[dxgi_format]
+
+        # Update pixel format: set flags to DDPF_FOURCC
+        struct.pack_into('<I', data, 80, DDPF_FOURCC)
+
+        # Set legacy FourCC (DXT1/DXT3/DXT5)
+        struct.pack_into('<I', data, 84, legacy_fourcc)
+
+        # Clear bit count and masks (not used for compressed formats)
+        struct.pack_into('<I', data, 88, 0)   # dwRGBBitCount
+        struct.pack_into('<I', data, 92, 0)   # dwRBitMask
+        struct.pack_into('<I', data, 96, 0)   # dwGBitMask
+        struct.pack_into('<I', data, 100, 0)  # dwBBitMask
+        struct.pack_into('<I', data, 104, 0)  # dwABitMask
+
+        # Remove 20-byte DX10 header: keep bytes 0-127, skip 128-147, keep 148+
+        new_data = data[:128] + data[148:]
+
+        # Write back
+        with open(filepath, 'wb') as f:
+            f.write(new_data)
+
+        return True, None
+
+    except Exception as e:
+        return False, str(e)
+
+
+def strip_dx10_headers_batch(directory: Path, recursive: bool = True) -> Tuple[int, int, list]:
+    """
+    Strip DX10 headers from all DDS files in a directory.
+
+    Args:
+        directory: Directory to scan
+        recursive: If True, scan subdirectories
+
+    Returns:
+        (stripped_count, skipped_count, warnings_list)
+    """
+    stripped = 0
+    skipped = 0
+    warnings = []
+
+    pattern = '**/*.dds' if recursive else '*.dds'
+
+    for dds_file in directory.glob(pattern):
+        if has_dx10_header(dds_file):
+            success, msg = strip_dx10_header(dds_file)
+            if success:
+                if msg:  # Warning
+                    warnings.append(f"{dds_file.name}: {msg}")
+                    skipped += 1
+                else:
+                    stripped += 1
+            else:
+                warnings.append(f"{dds_file.name}: ERROR - {msg}")
+                skipped += 1
+
+    return stripped, skipped, warnings
+
+
 if __name__ == "__main__":
     # Test on local DDS files
     import sys
