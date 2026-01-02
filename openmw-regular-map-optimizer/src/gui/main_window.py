@@ -21,6 +21,7 @@ from src.core import (
 )
 from src.core.regular_settings import (
     DEFAULT_BLACKLIST,
+    AGGRESSIVE_BLACKLIST,
     DEFAULT_NO_MIPMAPS,
 )
 
@@ -57,7 +58,7 @@ class RegularTextureProcessorGUI:
         self.output_dir = tk.StringVar()
         self.resize_method = tk.StringVar(value="FANT (Recommended - sharp details)")
         self.scale_factor = tk.DoubleVar(value=1.0)
-        self.max_resolution = tk.IntVar(value=2048)
+        self.max_resolution = tk.IntVar(value=4096)
         self.min_resolution = tk.IntVar(value=256)
         self.uniform_weighting = tk.BooleanVar(value=False)
         self.use_dithering = tk.BooleanVar(value=False)
@@ -71,12 +72,13 @@ class RegularTextureProcessorGUI:
         self.enable_tga_support = tk.BooleanVar(value=True)
         self.use_path_whitelist = tk.BooleanVar(value=True)
         self.use_path_blacklist = tk.BooleanVar(value=True)
+        self.use_aggressive_blacklist = tk.BooleanVar(value=False)
         self.custom_blacklist = tk.StringVar(value="")
         self.copy_passthrough_files = tk.BooleanVar(value=False)
         self.use_no_mipmap_paths = tk.BooleanVar(value=True)
         self.exclude_normal_maps = tk.BooleanVar(value=True)
         self.enable_atlas_downscaling = tk.BooleanVar(value=False)
-        self.atlas_max_resolution = tk.IntVar(value=4096)
+        self.atlas_max_resolution = tk.IntVar(value=8192)
         self.optimize_unused_alpha = tk.BooleanVar(value=True)  # Default ON - recommended
         self.alpha_threshold = tk.IntVar(value=255)
         self.analysis_chunk_size = tk.IntVar(value=100)  # Chunk size for parallel alpha analysis
@@ -90,9 +92,9 @@ class RegularTextureProcessorGUI:
                     self.small_texture_threshold, self.allow_well_compressed_passthrough,
                     self.preserve_compressed_format, self.enable_atlas_downscaling,
                     self.atlas_max_resolution, self.enforce_power_of_2, self.use_path_whitelist,
-                    self.use_path_blacklist, self.custom_blacklist, self.enable_tga_support,
-                    self.copy_passthrough_files, self.use_no_mipmap_paths, self.exclude_normal_maps,
-                    self.optimize_unused_alpha]:
+                    self.use_path_blacklist, self.use_aggressive_blacklist, self.custom_blacklist,
+                    self.enable_tga_support, self.copy_passthrough_files, self.use_no_mipmap_paths,
+                    self.exclude_normal_maps, self.optimize_unused_alpha]:
             var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
@@ -443,6 +445,15 @@ class RegularTextureProcessorGUI:
         blacklist_str = ", ".join(DEFAULT_BLACKLIST)
         ttk.Checkbutton(frame_black, text=f"Skip paths containing: {blacklist_str}",
                        variable=self.use_path_blacklist).pack(anchor="w")
+
+        # Aggressive blacklist option
+        aggressive_str = ", ".join(AGGRESSIVE_BLACKLIST)
+        ttk.Checkbutton(frame_black, text=f"Aggressive: Also skip: {aggressive_str}",
+                       variable=self.use_aggressive_blacklist).pack(anchor="w", pady=(10, 0))
+        ttk.Label(frame_black,
+                 text="Catches OpenMW Lua mod UI textures and common UI patterns. May exclude some legitimate textures.",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
         ttk.Label(frame_black, text="Custom blacklist (comma-separated):").pack(anchor="w", pady=(10, 0))
         ttk.Entry(frame_black, textvariable=self.custom_blacklist, width=50).pack(anchor="w", pady=5)
 
@@ -633,6 +644,8 @@ class RegularTextureProcessorGUI:
     def get_settings(self) -> RegularSettings:
         whitelist = ["Textures"] if self.use_path_whitelist.get() else []
         blacklist = DEFAULT_BLACKLIST.copy() if self.use_path_blacklist.get() else []
+        if self.use_aggressive_blacklist.get():
+            blacklist.extend(AGGRESSIVE_BLACKLIST)
         custom = [x.strip() for x in self.custom_blacklist.get().split(",") if x.strip()]
         no_mipmap_paths = DEFAULT_NO_MIPMAPS.copy() if self.use_no_mipmap_paths.get() else []
 

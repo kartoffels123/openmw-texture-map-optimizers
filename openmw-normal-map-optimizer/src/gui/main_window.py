@@ -22,7 +22,7 @@ from src.core import (
     get_parser_stats,
     reset_parser_stats
 )
-from src.core.normal_settings import DEFAULT_BLACKLIST
+from src.core.normal_settings import DEFAULT_BLACKLIST, AGGRESSIVE_BLACKLIST
 
 
 class NormalMapProcessorGUI:
@@ -80,6 +80,7 @@ class NormalMapProcessorGUI:
         # Filtering settings
         self.use_path_whitelist = tk.BooleanVar(value=True)
         self.use_path_blacklist = tk.BooleanVar(value=True)
+        self.use_aggressive_blacklist = tk.BooleanVar(value=False)
         self.custom_blacklist = tk.StringVar(value="")
 
         # For storing filter stats
@@ -95,7 +96,7 @@ class NormalMapProcessorGUI:
                     self.auto_fix_nh_to_n, self.auto_optimize_n_alpha, self.allow_compressed_passthrough,
                     self.copy_passthrough_files, self.enable_atlas_downscaling, self.atlas_max_resolution,
                     self.enforce_power_of_2, self.use_path_whitelist, self.use_path_blacklist,
-                    self.custom_blacklist]:
+                    self.use_aggressive_blacklist, self.custom_blacklist]:
             var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
@@ -585,6 +586,14 @@ class NormalMapProcessorGUI:
                       "that should not be processed as normal maps.",
                  font=("", 8)).pack(anchor="w", padx=(20, 0))
 
+        # Aggressive blacklist option
+        aggressive_str = ", ".join(AGGRESSIVE_BLACKLIST)
+        ttk.Checkbutton(frame_black, text=f"Aggressive: Also skip: {aggressive_str}",
+                       variable=self.use_aggressive_blacklist).pack(anchor="w", pady=(10, 0))
+        ttk.Label(frame_black,
+                 text="Catches OpenMW Lua mod UI textures and common UI patterns. May exclude some legitimate textures.",
+                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+
         ttk.Label(frame_black, text="Custom blacklist (comma-separated):").pack(anchor="w", pady=(10, 0))
         ttk.Entry(frame_black, textvariable=self.custom_blacklist, width=50).pack(anchor="w", pady=5)
         ttk.Label(frame_black,
@@ -932,6 +941,8 @@ class NormalMapProcessorGUI:
         # Build whitelist/blacklist based on UI settings
         whitelist = ["Textures"] if self.use_path_whitelist.get() else []
         blacklist = DEFAULT_BLACKLIST.copy() if self.use_path_blacklist.get() else []
+        if self.use_aggressive_blacklist.get():
+            blacklist.extend(AGGRESSIVE_BLACKLIST)
         custom = [x.strip().lower() for x in self.custom_blacklist.get().split(",") if x.strip()]
 
         return ProcessingSettings(

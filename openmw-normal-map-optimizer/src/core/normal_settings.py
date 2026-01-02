@@ -53,6 +53,14 @@ DEFAULT_BLACKLIST = [
     "icon", "icons", "bookart",  # Original defaults
     "menu_", "tx_menu_",         # Menu textures
     "cursor", "compass", "target",  # UI elements
+    "hud", "splash", "logo", "font", "loading",  # Common UI patterns
+]
+
+# Aggressive blacklist (optional, disabled by default)
+# These patterns may catch some legitimate 3D textures but are commonly UI-related
+AGGRESSIVE_BLACKLIST = [
+    "levelup", "char_", "scroll", "button", "bar_", "slot",  # UI elements
+    "(openmw",  # OpenMW Lua mods often have UI textures (e.g., "(OpenMW 0.49) Floating Healthbars")
 ]
 
 
