@@ -1110,14 +1110,14 @@ class NormalMapProcessorGUI:
                     min_dim = min(result.width, result.height)
                     will_resize = (result.new_width != result.width) or (result.new_height != result.height)
 
-                    if max_dim > 2048:
+                    if max_dim > self.max_resolution.get():
                         oversized_textures.append((result.relative_path, result.width, result.height))
-                        if will_resize and max(result.new_width, result.new_height) <= 2048:
+                        if will_resize and max(result.new_width, result.new_height) <= self.max_resolution.get():
                             oversized_will_fix.append((result.relative_path, result.width, result.height))
 
-                    if min_dim < 256:
+                    if min_dim < self.min_resolution.get():
                         undersized_textures.append((result.relative_path, result.width, result.height))
-                        if will_resize and min(result.new_width, result.new_height) >= 256:
+                        if will_resize and min(result.new_width, result.new_height) >= self.min_resolution.get():
                             undersized_will_fix.append((result.relative_path, result.width, result.height))
 
                     # Categorize action
@@ -1359,7 +1359,7 @@ class NormalMapProcessorGUI:
             if oversized_textures:
                 if len(oversized_will_fix) == len(oversized_textures):
                     # All will be fixed
-                    self.log(f"\nℹ Auto-fix: {len(oversized_textures)} texture(s) larger than 2048px will be downscaled")
+                    self.log(f"\nℹ Auto-fix: {len(oversized_textures)} texture(s) larger than {self.max_resolution.get()}px will be downscaled")
                     for path, w, h in oversized_textures[:3]:
                         self.log(f"     • {path} ({w}x{h})")
                     if len(oversized_textures) > 3:
@@ -1368,10 +1368,10 @@ class NormalMapProcessorGUI:
                     # Some will be fixed
                     unfixed = len(oversized_textures) - len(oversized_will_fix)
                     self.log(f"\nℹ Auto-fix: {len(oversized_will_fix)} of {len(oversized_textures)} oversized textures will be downscaled")
-                    self.log(f"⚠  {unfixed} will remain larger than 2048px - adjust 'Max Resolution' if needed")
+                    self.log(f"⚠  {unfixed} will remain larger than {self.max_resolution.get()}px - adjust 'Max Resolution' if needed")
                 else:
                     # None will be fixed
-                    self.log(f"\n⚠ Resolution: {len(oversized_textures)} texture(s) larger than 2048px")
+                    self.log(f"\n⚠ Resolution: {len(oversized_textures)} texture(s) larger than {self.max_resolution.get()}px")
                     for path, w, h in oversized_textures[:5]:
                         self.log(f"     • {path} ({w}x{h})")
                     if len(oversized_textures) > 5:
@@ -1384,7 +1384,7 @@ class NormalMapProcessorGUI:
                     self.log(f"\nℹ Auto-fix: {len(undersized_will_fix)} of {len(undersized_textures)} undersized textures will be upscaled")
                     unfixed = len(undersized_textures) - len(undersized_will_fix)
                     if unfixed > 0:
-                        self.log(f"⚠  {unfixed} will remain smaller than 256px")
+                        self.log(f"⚠  {unfixed} will remain smaller than {self.min_resolution.get()}px")
                 else:
                     # Show as info only if user is downscaling
                     settings = self.get_settings()
@@ -1397,7 +1397,7 @@ class NormalMapProcessorGUI:
                                 self.log(f"     ... and {len(undersized_textures) - 5} more")
                             self.log(f"   → Protected by 'Min Resolution: {settings.min_resolution}' setting (prevents over-compression)")
                         else:
-                            self.log(f"\n⚠ Resolution: {len(undersized_textures)} texture(s) smaller than 256px")
+                            self.log(f"\n⚠ Resolution: {len(undersized_textures)} texture(s) smaller than {self.min_resolution.get()}px")
                             for path, w, h in undersized_textures[:5]:
                                 self.log(f"     • {path} ({w}x{h})")
                             if len(undersized_textures) > 5:

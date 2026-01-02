@@ -827,7 +827,7 @@ class RegularTextureProcessorGUI:
                     action_groups['missing_mipmaps'].append(r)
                 if r.format in ('TGA', 'TGA_RGB', 'TGA_RGBA'):
                     action_groups['tga_conversion'].append(r)
-                if r.width and r.height and max(r.width, r.height) > 2048:
+                if r.width and r.height and max(r.width, r.height) > self.max_resolution.get():
                     # Track if it will actually be resized (accounts for atlas protection)
                     will_be_resized = (r.new_width != r.width) or (r.new_height != r.height)
                     oversized_textures.append((r.relative_path, r.width, r.height, will_be_resized))
@@ -1012,7 +1012,7 @@ class RegularTextureProcessorGUI:
                     wont_fix = [t for t in oversized_textures if not t[3]]
 
                     if will_fix:
-                        self.log(f"\n[i] Auto-fix: {len(will_fix)} texture(s) larger than 2048px will be downscaled")
+                        self.log(f"\n[i] Auto-fix: {len(will_fix)} texture(s) larger than {self.max_resolution.get()}px will be downscaled")
                         for path, w, h, _ in will_fix[:3]:
                             self.log(f"      - {path} ({w}x{h})")
                         if len(will_fix) > 3:
