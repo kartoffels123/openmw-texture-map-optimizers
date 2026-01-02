@@ -254,6 +254,11 @@ def _process_normal_map(input_dds: Path, output_dds: Path, is_nh: bool, settings
         if target_format != "BC5/ATI2" and settings.get('reconstruct_z', True):
             cmd.append("-reconstructz")
 
+        # Force BC1 to fully opaque mode (no punch-through alpha)
+        # This prevents unused alpha data from triggering DXT1a transparency
+        if target_format == "BC1/DXT1":
+            cmd.extend(["-at", "0"])
+
         if target_format in ["BC1/DXT1", "BC3/DXT5"]:
             bc_options = ""
             if settings.get('uniform_weighting', True):
