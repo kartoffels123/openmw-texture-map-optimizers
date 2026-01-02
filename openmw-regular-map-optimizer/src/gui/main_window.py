@@ -447,11 +447,11 @@ class RegularTextureProcessorGUI:
                        variable=self.use_path_blacklist).pack(anchor="w")
 
         # Aggressive blacklist option
-        aggressive_str = ", ".join(AGGRESSIVE_BLACKLIST)
-        ttk.Checkbutton(frame_black, text=f"Aggressive: Also skip: {aggressive_str}",
+        ttk.Checkbutton(frame_black, text="Aggressive UI filtering (OpenMW Lua mods, levelup, scroll, etc.)",
                        variable=self.use_aggressive_blacklist).pack(anchor="w", pady=(10, 0))
+        aggressive_str = ", ".join(AGGRESSIVE_BLACKLIST)
         ttk.Label(frame_black,
-                 text="Catches OpenMW Lua mod UI textures and common UI patterns. May exclude some legitimate textures.",
+                 text=f"Also skips: {aggressive_str}\nMay exclude some legitimate textures.",
                  font=("", 8)).pack(anchor="w", padx=(20, 0))
 
         ttk.Label(frame_black, text="Custom blacklist (comma-separated):").pack(anchor="w", pady=(10, 0))
