@@ -1,4 +1,4 @@
-# OpenMW Normal Map Optimizer v0.11
+# OpenMW Normal Map Optimizer v0.12
 
 A high-performance tool for optimizing, fixing, and compressing normal maps for OpenMW.
 
@@ -150,7 +150,10 @@ openmw-normal-map-optimizer/
 
 ## Version History
 
-### Version 0.11 (Current)
+### Version 0.12 (Current)
+- **More filtering options** - Enhanced path filtering with additional configuration options
+
+### Version 0.11
 - **Proper alpha handling** - Changed from `-alpha` to `-alpha -sepalpha` for straight alpha and proper mipmap generation without color bleeding
 - **Progress bar fix** - Fixed progress bar not filling up when passthrough files are skipped
 - **Parallel processing fix** - Progress callback now called correctly on exceptions during parallel processing

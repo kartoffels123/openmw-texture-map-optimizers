@@ -1,6 +1,16 @@
-# OpenMW MO2 Integrator
+# OpenMW MO2 Integrator v0.1
 
 Integrates the output of the OpenMW texture optimizers (Normal Map Optimizer and Regular Map Optimizer) into your Mod Organizer 2 setup.
+
+## Quick Start
+
+1. **Install Python** from [python.org](https://www.python.org/downloads/)
+   - Make sure to check "Add Python to PATH" during installation
+2. **Double-click** `OpenMW MO2 Integrator.bat` to launch
+3. **Configure** your MO2 Mods directory and modlist.txt paths
+4. **Select** your optimizer output directories
+5. **Choose** an integration mode (Merged recommended)
+6. **Run Integration**
 
 ## Overview
 
@@ -131,3 +141,58 @@ After integration completes, you must:
 - MO2's `modlist.txt` lists mods in priority order (top = highest priority = loads last)
 - Option A inserts optimization mods **before** the original in the file (higher priority)
 - Option B copies files in reverse priority order (highest priority copied last = wins)
+
+---
+
+## Installation
+
+### Requirements
+- Python 3.7 or later
+- Windows
+
+### Setup
+1. **Download/Clone** this repository
+2. **Install Python** from [python.org](https://www.python.org/downloads/)
+   - During installation, check "Add Python to PATH"
+3. **Verify installation** by opening Command Prompt and typing:
+   ```
+   python --version
+   ```
+   You should see something like `Python 3.13.x`
+
+### Running the Application
+Simply double-click **`OpenMW MO2 Integrator.bat`**
+
+If Python is not installed or not in PATH, the batch file will show helpful error messages.
+
+---
+
+## Project Structure
+
+```
+openmw-mo2-integrator/
+├── OpenMW MO2 Integrator.bat    # Launch this!
+├── integrator.py                 # Main entry point
+├── src/
+│   └── gui.py                    # GUI implementation
+└── example_mo2_structure/        # Reference MO2 structure
+```
+
+---
+
+## Version History
+
+### Version 0.1 (Current)
+- Initial release
+- Two integration modes: Separate Mods and Merged Optimizations
+- Automatic collision detection for merged mode
+- Load order respect from MO2's modlist.txt
+- Purge function for cleanup
+- Automatic modlist.txt backup
+
+---
+
+## Resources
+
+- [Mod Organizer 2](https://www.modorganizer.org/) - Mod management tool
+- [OpenMW](https://openmw.org/) - Open source Morrowind engine

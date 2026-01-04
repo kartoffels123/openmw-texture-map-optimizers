@@ -19,14 +19,16 @@ jobs:
         run: |
           mkdir -p release-staging
 
-          # Copy the three main folders
+          # Copy the four main folders
           cp -r openmw-normal-map-optimizer release-staging/
           cp -r openmw-regular-map-optimizer release-staging/
+          cp -r openmw-mo2-integrator release-staging/
           cp -r openmw-texture-optimizer-core release-staging/
 
           # Copy READMEs to root with descriptive names
           cp openmw-normal-map-optimizer/README.md "release-staging/README - Normal Map Optimizer.md"
           cp openmw-regular-map-optimizer/README.md "release-staging/README - Regular Texture Optimizer.md"
+          cp openmw-mo2-integrator/README.md "release-staging/README - MO2 Integrator.md"
 
           # Create release launcher for Normal Map Optimizer
           cat > "release-staging/OpenMW Normal Map Optimizer.bat" << 'EOF'
@@ -82,6 +84,33 @@ jobs:
           )
           EOF
 
+          # Create release launcher for MO2 Integrator
+          cat > "release-staging/OpenMW MO2 Integrator.bat" << 'EOF'
+          @echo off
+          REM OpenMW MO2 Integrator Launcher
+          REM Double-click this file to start the application
+
+          REM Check if Python is installed
+          python --version >nul 2>&1
+          if errorlevel 1 (
+              echo ERROR: Python is not installed or not in PATH
+              echo Please install Python from https://www.python.org/downloads/
+              echo Make sure to check "Add Python to PATH" during installation
+              pause
+              exit /b 1
+          )
+
+          REM Launch the integrator
+          python "%~dp0openmw-mo2-integrator\integrator.py"
+
+          REM If there was an error, pause so user can see it
+          if errorlevel 1 (
+              echo.
+              echo An error occurred. Press any key to exit...
+              pause >nul
+          )
+          EOF
+
           # Create the zip
           cd release-staging
           zip -r ../openmw-texture-optimizers.zip .
@@ -94,15 +123,17 @@ jobs:
           body: |
             ## OpenMW Texture Optimizers Release
 
-            This release includes both tools in a single download:
-            - **Normal Map Optimizer v0.10** - For optimizing `_N.dds` and `_NH.dds` normal maps
-            - **Regular Texture Optimizer v0.1** - For optimizing all other textures (DDS and TGA)
+            This release includes all three tools in a single download:
+            - **Normal Map Optimizer v0.12** - For optimizing `_N.dds` and `_NH.dds` normal maps
+            - **Regular Texture Optimizer v0.3** - For optimizing all other textures (DDS and TGA)
+            - **MO2 Integrator v0.1** - For integrating optimized textures into Mod Organizer 2
 
             ### Quick Start
             1. Extract the zip file
             2. Double-click the appropriate `.bat` file to launch:
                - `OpenMW Normal Map Optimizer.bat` - For normal maps
                - `OpenMW Regular Texture Optimizer.bat` - For regular textures
+               - `OpenMW MO2 Integrator.bat` - For MO2 integration
             3. Configure input/output directories
             4. Run a Dry Run to preview changes
             5. Process files when ready
@@ -110,5 +141,6 @@ jobs:
             ### Documentation
             - `README - Normal Map Optimizer.md` - Documentation for normal map optimization
             - `README - Regular Texture Optimizer.md` - Documentation for regular texture optimization
+            - `README - MO2 Integrator.md` - Documentation for MO2 integration
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
