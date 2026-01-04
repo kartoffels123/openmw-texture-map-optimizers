@@ -25,7 +25,8 @@ jobs:
           cp -r openmw-mo2-integrator release-staging/
           cp -r openmw-texture-optimizer-core release-staging/
 
-          # Copy READMEs to root with descriptive names
+          # Copy READMEs and guides to root with descriptive names
+          cp GENERAL_GUIDE.md "release-staging/START HERE - General Guide.md"
           cp openmw-normal-map-optimizer/README.md "release-staging/README - Normal Map Optimizer.md"
           cp openmw-regular-map-optimizer/README.md "release-staging/README - Regular Texture Optimizer.md"
           cp openmw-mo2-integrator/README.md "release-staging/README - MO2 Integrator.md"
@@ -139,6 +140,7 @@ jobs:
             5. Process files when ready
 
             ### Documentation
+            - `START HERE - General Guide.md` - Step-by-step guide for general users
             - `README - Normal Map Optimizer.md` - Documentation for normal map optimization
             - `README - Regular Texture Optimizer.md` - Documentation for regular texture optimization
             - `README - MO2 Integrator.md` - Documentation for MO2 integration
