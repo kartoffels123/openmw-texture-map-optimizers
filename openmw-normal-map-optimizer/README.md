@@ -1,4 +1,4 @@
-# OpenMW Normal Map Optimizer v0.12
+# OpenMW Normal Map Optimizer v0.13
 
 A high-performance tool for optimizing, fixing, and compressing normal maps for OpenMW.
 

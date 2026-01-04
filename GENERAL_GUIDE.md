@@ -2,6 +2,20 @@
 
 > Advanced users or mod authors should see subpage readmes.
 
+## Installation
+
+**Requirements**: Python 3, NumPy, and Windows (for now)
+
+### The Three Tools
+
+| Tool | Version | Description |
+|------|---------|-------------|
+| Normal Map Optimizer | v0.13 | Specifically for normals as these usually need special recalculations |
+| Regular Texture Optimizer | v0.4 | Everything else |
+| MO2 Integrator | v0.1 | Integrates optimized textures into your Mod Organizer 2 setup |
+
+---
+
 ## Prerequisites
 
 - **Mod Organizer 2** modlist setup

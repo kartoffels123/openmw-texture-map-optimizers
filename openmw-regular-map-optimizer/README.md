@@ -1,4 +1,4 @@
-# OpenMW Regular Texture Optimizer v0.3
+# OpenMW Regular Texture Optimizer v0.4
 
 A high-performance tool for optimizing and compressing regular (non-normal map) textures for OpenMW.
 

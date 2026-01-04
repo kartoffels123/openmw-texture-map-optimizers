@@ -125,8 +125,8 @@ jobs:
             ## OpenMW Texture Optimizers Release
 
             This release includes all three tools in a single download:
-            - **Normal Map Optimizer v0.12** - For optimizing `_N.dds` and `_NH.dds` normal maps
-            - **Regular Texture Optimizer v0.3** - For optimizing all other textures (DDS and TGA)
+            - **Normal Map Optimizer v0.13** - For optimizing `_N.dds` and `_NH.dds` normal maps
+            - **Regular Texture Optimizer v0.4** - For optimizing all other textures (DDS and TGA)
             - **MO2 Integrator v0.1** - For integrating optimized textures into Mod Organizer 2
 
             ### Quick Start
