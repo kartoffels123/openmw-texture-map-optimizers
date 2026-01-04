@@ -976,10 +976,10 @@ class RegularTextureProcessor:
         # DX10 headers stripped (from cuttlefish BC format output)
         self.dx10_headers_stripped = stripped
 
-        # Count BGRX→BGR24 conversions (files with target_format == "BGR")
+        # Count BGRX→BGR24 conversions (files with new_format containing BGR but not BGRA)
         # These had the padding byte stripped by convert_bgrx32_to_bgr24
         self.bgrx_to_bgr24_converted = sum(
-            1 for r in results if r.success and r.target_format == "BGR"
+            1 for r in results if r.success and 'B8G8R8' in r.new_format and 'A8' not in r.new_format
         )
 
         return results

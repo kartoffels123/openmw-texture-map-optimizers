@@ -1175,7 +1175,7 @@ class RegularTextureProcessorGUI:
             if dx10_stripped > 0 or bgrx_converted > 0:
                 self.log("\n=== Post-Processing ===")
                 if dx10_stripped > 0:
-                    self.log(f"DX10 headers stripped: {dx10_stripped} (cuttlefish BC output → legacy DDS)")
+                    self.log(f"DX10 headers stripped: {dx10_stripped} (modern DDS → legacy DDS)")
                 if bgrx_converted > 0:
                     self.log(f"BGRX→BGR24 converted: {bgrx_converted} (32-bit padded → true 24-bit)")
 
