@@ -1151,28 +1151,21 @@ def convert_bgrx32_to_bgr24(filepath: Path) -> Tuple[bool, Optional[str]]:
         # Header is 128 bytes for non-DX10
         header_size = 128
 
-        # Convert pixel data: strip every 4th byte (the X padding)
-        src_offset = header_size
-        new_pixel_data = bytearray()
-
+        # Calculate total source bytes for all mip levels
+        total_src_bytes = 0
         mip_w, mip_h = width, height
         for _ in range(mipmap_count):
-            mip_pixels = mip_w * mip_h
-            src_size = mip_pixels * 4
-
-            if src_offset + src_size > len(data):
-                return False, "Incomplete pixel data"
-
-            # Use numpy for fast conversion
-            mip_data = np.frombuffer(data[src_offset:src_offset + src_size], dtype=np.uint8)
-            # Reshape to Nx4 and take only first 3 columns (BGR, drop X)
-            mip_data = mip_data.reshape(-1, 4)[:, :3].flatten()
-            new_pixel_data.extend(mip_data.tobytes())
-
-            src_offset += src_size
-            # Next mip level (halve dimensions, min 1)
+            total_src_bytes += mip_w * mip_h * 4
             mip_w = max(1, mip_w // 2)
             mip_h = max(1, mip_h // 2)
+
+        if header_size + total_src_bytes > len(data):
+            return False, "Incomplete pixel data"
+
+        # Convert all pixel data in one numpy operation (no loop needed)
+        # Each pixel is 4 bytes (BGRX), we take first 3 (BGR) and drop the X
+        src_pixels = np.frombuffer(data[header_size:header_size + total_src_bytes], dtype=np.uint8)
+        new_pixel_data = src_pixels.reshape(-1, 4)[:, :3].tobytes()
 
         # Update header for 24-bit format
         # dwRGBBitCount = 24
