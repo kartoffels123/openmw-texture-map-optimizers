@@ -63,6 +63,7 @@ _utils = _import_shared_module("utils")
 parse_dds_header = _dds_parser.parse_dds_header
 get_parser_stats = _dds_parser.get_parser_stats
 reset_parser_stats = _dds_parser.reset_parser_stats
+convert_bgrx32_to_bgr24 = _dds_parser.convert_bgrx32_to_bgr24
 FileScanner = _file_scanner.FileScanner
 ProcessingResult = _base_settings.ProcessingResult
 AnalysisResult = _base_settings.AnalysisResult
@@ -291,6 +292,11 @@ def _process_normal_map(input_dds: Path, output_dds: Path, is_nh: bool, settings
             if output_dds.exists():
                 output_dds.unlink()
             generated_dds.rename(output_dds)
+
+        # Post-process: Convert 32-bit BGRX to true 24-bit BGR
+        # texconv outputs B8G8R8X8_UNORM (32-bit with padding) for BGR format
+        if target_format == "BGR":
+            convert_bgrx32_to_bgr24(output_dds)
 
         return True
 

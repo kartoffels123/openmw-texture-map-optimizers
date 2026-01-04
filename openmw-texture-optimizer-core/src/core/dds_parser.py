@@ -1093,6 +1093,148 @@ def strip_dx10_header(filepath: Path) -> Tuple[bool, Optional[str]]:
         return False, str(e)
 
 
+def convert_bgrx32_to_bgr24(filepath: Path) -> Tuple[bool, Optional[str]]:
+    """
+    Convert a B8G8R8X8_UNORM (32-bit BGRX) DDS file to B8G8R8 (24-bit BGR) in-place.
+
+    This strips the unused X (padding) byte from each pixel, reducing file size by 25%.
+    Only works on uncompressed B8G8R8X8_UNORM format files.
+    BTW, we know it's BGRX because the alpha mask is 0 in that format.
+    Our decision tree, if it detects wasted BGRA space the procedure is to convert to BGRX.
+    From there we can convert to BGR24 as a hacky post clean up.
+
+    Args:
+        filepath: Path to DDS file to convert (in-place)
+
+    Returns:
+        (True, None) on success
+        (False, error_message) on failure or if format is not B8G8R8X8_UNORM
+    """
+    try:
+        with open(filepath, 'rb') as f:
+            data = bytearray(f.read())
+
+        if len(data) < 128:
+            return False, "File too small to be valid DDS"
+
+        # Check magic
+        if data[0:4] != b'DDS ':
+            return False, "Not a valid DDS file"
+
+        # Check for DX10 header - we don't handle that here
+        pf_fourcc = struct.unpack('<I', data[84:88])[0]
+        if pf_fourcc == FOURCC_DX10:
+            return False, "DX10 header present - strip it first or use a different approach"
+
+        # Check pixel format flags
+        pf_flags = struct.unpack('<I', data[80:84])[0]
+        if not (pf_flags & DDPF_RGB):
+            return False, "Not an RGB format"
+
+        # Check bit count
+        rgb_bitcount = struct.unpack('<I', data[88:92])[0]
+        if rgb_bitcount != 32:
+            return False, f"Not 32-bit format (found {rgb_bitcount}-bit)"
+
+        # Verify it's BGRX (alpha mask should be 0)
+        a_mask = struct.unpack('<I', data[104:108])[0]
+        if a_mask != 0:
+            return False, "Has alpha mask - this is BGRA, not BGRX"
+
+        # Get dimensions and mipmap count
+        height = struct.unpack('<I', data[12:16])[0]
+        width = struct.unpack('<I', data[16:20])[0]
+        mipmap_count = struct.unpack('<I', data[28:32])[0]
+        if mipmap_count == 0:
+            mipmap_count = 1
+
+        # Header is 128 bytes for non-DX10
+        header_size = 128
+
+        # Convert pixel data: strip every 4th byte (the X padding)
+        src_offset = header_size
+        new_pixel_data = bytearray()
+
+        mip_w, mip_h = width, height
+        for _ in range(mipmap_count):
+            mip_pixels = mip_w * mip_h
+            src_size = mip_pixels * 4
+
+            if src_offset + src_size > len(data):
+                return False, "Incomplete pixel data"
+
+            # Use numpy for fast conversion
+            mip_data = np.frombuffer(data[src_offset:src_offset + src_size], dtype=np.uint8)
+            # Reshape to Nx4 and take only first 3 columns (BGR, drop X)
+            mip_data = mip_data.reshape(-1, 4)[:, :3].flatten()
+            new_pixel_data.extend(mip_data.tobytes())
+
+            src_offset += src_size
+            # Next mip level (halve dimensions, min 1)
+            mip_w = max(1, mip_w // 2)
+            mip_h = max(1, mip_h // 2)
+
+        # Update header for 24-bit format
+        # dwRGBBitCount = 24
+        struct.pack_into('<I', data, 88, 24)
+
+        # Update pitch (bytes per row for base level)
+        # dwPitchOrLinearSize = width * 3
+        struct.pack_into('<I', data, 20, width * 3)
+
+        # Bit masks for 24-bit BGR:
+        # R mask = 0x00FF0000 (bits 16-23)
+        # G mask = 0x0000FF00 (bits 8-15)
+        # B mask = 0x000000FF (bits 0-7)
+        # A mask = 0x00000000 (no alpha)
+        struct.pack_into('<I', data, 92, 0x00FF0000)   # R mask
+        struct.pack_into('<I', data, 96, 0x0000FF00)   # G mask
+        struct.pack_into('<I', data, 100, 0x000000FF)  # B mask
+        struct.pack_into('<I', data, 104, 0x00000000)  # A mask (already 0, but explicit)
+
+        # Write new file: header + new pixel data
+        with open(filepath, 'wb') as f:
+            f.write(data[:header_size])
+            f.write(new_pixel_data)
+
+        return True, None
+
+    except Exception as e:
+        return False, str(e)
+
+
+def convert_bgrx32_to_bgr24_batch(directory: Path, recursive: bool = True) -> Tuple[int, int, list]:
+    """
+    Convert all B8G8R8X8_UNORM DDS files in a directory to B8G8R8 (24-bit).
+
+    Args:
+        directory: Directory to scan
+        recursive: If True, scan subdirectories
+
+    Returns:
+        (converted_count, skipped_count, messages_list)
+    """
+    converted = 0
+    skipped = 0
+    messages = []
+
+    pattern = '**/*.dds' if recursive else '*.dds'
+
+    for dds_file in directory.glob(pattern):
+        # Quick check: parse header to see if it's B8G8R8X8
+        _, fmt = parse_dds_header(dds_file)
+        if fmt == 'B8G8R8X8_UNORM':
+            success, msg = convert_bgrx32_to_bgr24(dds_file)
+            if success:
+                converted += 1
+            else:
+                messages.append(f"{dds_file.name}: {msg}")
+                skipped += 1
+        # else: not BGRX, skip silently
+
+    return converted, skipped, messages
+
+
 def strip_dx10_headers_batch(directory: Path, recursive: bool = True) -> Tuple[int, int, list]:
     """
     Strip DX10 headers from all DDS files in a directory.

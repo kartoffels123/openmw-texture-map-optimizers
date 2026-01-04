@@ -68,6 +68,7 @@ parse_tga_header_extended = _dds_parser.parse_tga_header_extended
 has_meaningful_alpha = _dds_parser.has_meaningful_alpha
 analyze_bc1_alpha = _dds_parser.analyze_bc1_alpha
 strip_dx10_headers_batch = _dds_parser.strip_dx10_headers_batch
+convert_bgrx32_to_bgr24 = _dds_parser.convert_bgrx32_to_bgr24
 
 # Re-export file scanner
 FileScanner = _file_scanner.FileScanner
@@ -267,6 +268,11 @@ def _process_texture_with_texconv(input_path: Path, output_path: Path, target_fo
 
         if not output_path.exists():
             return False, f"Output file not created: {output_path}"
+
+        # Post-process: Convert 32-bit BGRX to true 24-bit BGR
+        # texconv outputs B8G8R8X8_UNORM (32-bit with padding) for BGR format
+        if target_format == "BGR":
+            convert_bgrx32_to_bgr24(output_path)
 
         return True, None
 
