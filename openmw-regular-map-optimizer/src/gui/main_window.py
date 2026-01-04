@@ -1169,6 +1169,16 @@ class RegularTextureProcessorGUI:
             self.log(f"Processed: {self.processed_count}, Failed: {self.failed_count}")
             self.log(f"Savings: {format_size(savings)} ({savings_pct:.1f}%)")
 
+            # Post-processing stats
+            dx10_stripped = getattr(self.processor, 'dx10_headers_stripped', 0)
+            bgrx_converted = getattr(self.processor, 'bgrx_to_bgr24_converted', 0)
+            if dx10_stripped > 0 or bgrx_converted > 0:
+                self.log("\n=== Post-Processing ===")
+                if dx10_stripped > 0:
+                    self.log(f"DX10 headers stripped: {dx10_stripped} (cuttlefish BC output → legacy DDS)")
+                if bgrx_converted > 0:
+                    self.log(f"BGRX→BGR24 converted: {bgrx_converted} (32-bit padded → true 24-bit)")
+
             self.stats_label.config(text=f"Processed: {self.processed_count} | Savings: {savings_pct:.1f}%")
             self.progress_label.config(text="Complete!")
             messagebox.showinfo("Done", f"Processed {self.processed_count} files\nSavings: {savings_pct:.1f}%")

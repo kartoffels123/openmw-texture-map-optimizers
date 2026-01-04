@@ -1583,6 +1583,12 @@ class NormalMapProcessorGUI:
                 avg_time = elapsed_time / total
                 self.log(f"Average per file: {format_time(avg_time)}")
 
+            # Post-processing stats
+            bgrx_converted = getattr(self.processor, 'bgrx_to_bgr24_converted', 0)
+            if bgrx_converted > 0:
+                self.log("\n=== Post-Processing ===")
+                self.log(f"BGRX→BGR24 converted: {bgrx_converted} (32-bit padded → true 24-bit)")
+
             if self.failed_count > 0:
                 messagebox.showwarning("Completed with errors", f"Processing completed with {self.failed_count} failed file(s)\n\n{stats_msg}")
             else:

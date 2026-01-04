@@ -730,6 +730,13 @@ class NormalMapProcessor:
             results = self._process_files_sequential(n_files, nh_files, input_dir, output_dir,
                                                      settings_dict, progress_callback)
 
+        # Store post-processing stats for GUI to display
+        # Count BGRX→BGR24 conversions (files with target_format == "BGR")
+        # These had the padding byte stripped by convert_bgrx32_to_bgr24
+        self.bgrx_to_bgr24_converted = sum(
+            1 for r in results if r.success and r.target_format == "BGR"
+        )
+
         return results
 
     def _analyze_files_sequential(self, all_files: List[Path], source_dir: Path,

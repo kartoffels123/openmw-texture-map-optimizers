@@ -972,6 +972,16 @@ class RegularTextureProcessor:
             for warning in warnings:
                 print(f"DX10 strip warning: {warning}")
 
+        # Store post-processing stats for GUI to display
+        # DX10 headers stripped (from cuttlefish BC format output)
+        self.dx10_headers_stripped = stripped
+
+        # Count BGRX→BGR24 conversions (files with target_format == "BGR")
+        # These had the padding byte stripped by convert_bgrx32_to_bgr24
+        self.bgrx_to_bgr24_converted = sum(
+            1 for r in results if r.success and r.target_format == "BGR"
+        )
+
         return results
 
     def _get_cached_analysis(self, relative_path: str) -> Optional[dict]:
