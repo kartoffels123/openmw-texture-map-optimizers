@@ -129,6 +129,8 @@ class RegularSettings(BaseProcessingSettings):
     land_texture_file: str = None  # Path to txt file with land texture stems
     # Land textures are still processed (compression, alpha, mipmaps) but NOT resized by default
     resize_land_textures: bool = False  # If False, skip resizing. If True, use custom limits
+    # TODO: Consider adding option to also protect related maps (_spec, _glow, _env, etc.)
+    #       Currently uses exact stem match. Could add prefix matching or suffix stripping.
     land_texture_min_resolution: int = 2048  # Floor - don't go below this (only if resize enabled)
     land_texture_max_resolution: int = 8192  # Ceiling - don't go above this (only if resize enabled)
 
