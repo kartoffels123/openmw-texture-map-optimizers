@@ -58,6 +58,7 @@ _dds_parser = _import_shared_module("dds_parser")
 _file_scanner = _import_shared_module("file_scanner")
 _base_settings = _import_shared_module("base_settings")
 _utils = _import_shared_module("utils")
+_land_texture_scanner = _import_shared_module("land_texture_scanner")
 
 # Re-export for external use
 parse_dds_header = _dds_parser.parse_dds_header
@@ -75,6 +76,7 @@ is_texture_atlas = _utils.is_texture_atlas
 calculate_new_dimensions = _utils.calculate_new_dimensions
 FORMAT_MAP = _utils.FORMAT_MAP
 FILTER_MAP = _utils.FILTER_MAP
+load_exclusion_list = _land_texture_scanner.load_exclusion_list
 
 # Import settings from local module
 from .normal_settings import NormalSettings
@@ -89,6 +91,27 @@ TEXDIAG_EXE = _TEXDIAG_EXE
 
 # Fast parser is always available (via shared core)
 _HAS_FAST_PARSER = True
+
+
+# =============================================================================
+# Land Texture Helper
+# =============================================================================
+
+def _is_land_texture(file_path: Path, land_texture_stems: set) -> bool:
+    """Check if a file is a land texture (should be protected from resizing).
+
+    For normal maps, we check the base texture name (without _n/_nh suffix).
+    E.g., tx_sand_01_n.dds -> tx_sand_01 -> check if in land_texture_stems
+    """
+    if not land_texture_stems:
+        return False
+    stem = file_path.stem.lower()
+    # Remove _n or _nh suffix to get base texture name
+    if stem.endswith('_nh'):
+        stem = stem[:-3]
+    elif stem.endswith('_n'):
+        stem = stem[:-2]
+    return stem in land_texture_stems
 
 
 # =============================================================================
@@ -140,7 +163,18 @@ def _process_normal_map(input_dds: Path, output_dds: Path, is_nh: bool, settings
             return False
 
         orig_width, orig_height = dimensions
-        new_width, new_height = calculate_new_dimensions(orig_width, orig_height, settings, input_dds)
+
+        # Check if this is a land texture (needs resize protection)
+        land_texture_stems = settings.get('land_texture_stems', set())
+        is_land = _is_land_texture(input_dds, land_texture_stems)
+
+        # Check if this is an atlas
+        is_atlas = is_texture_atlas(input_dds)
+
+        new_width, new_height = calculate_new_dimensions(
+            orig_width, orig_height, settings, input_dds,
+            is_atlas=is_atlas, is_land_texture=is_land
+        )
 
         # Check for compressed passthrough (fast path - just copy the file)
         if settings.get('allow_compressed_passthrough', False):
@@ -412,9 +446,18 @@ def _analyze_file_worker(args):
         # Check if this is an atlas
         is_atlas = is_texture_atlas(dds_file)
 
-        new_width, new_height = calculate_new_dimensions(width, height, settings, is_atlas=is_atlas)
+        # Check if this is a land texture (needs resize protection)
+        land_texture_stems = settings.get('land_texture_stems', set())
+        is_land = _is_land_texture(dds_file, land_texture_stems)
+
+        new_width, new_height = calculate_new_dimensions(
+            width, height, settings,
+            is_atlas=is_atlas, is_land_texture=is_land
+        )
         result.new_width = new_width
         result.new_height = new_height
+        result.is_atlas = is_atlas
+        result.is_land_texture = is_land
 
         will_resize = (new_width != width) or (new_height != height)
 
@@ -516,6 +559,22 @@ def _analyze_file_worker(args):
             if max_dim > settings.get('max_resolution', 2048) and settings.get('max_resolution', 0) > 0:
                 warnings.append(f"Texture atlas detected - resize skipped despite size {width}x{height} exceeding max resolution")
 
+        # Land texture detected - explain what resize was skipped
+        if is_land and width > 0 and height > 0:
+            scale = settings.get('scale_factor', 1.0)
+            max_res = settings.get('max_resolution', 0)
+            would_scale = scale != 1.0 and scale < 1.0
+            would_cap = max_res > 0 and max(width, height) > max_res
+
+            if would_scale or would_cap:
+                reasons = []
+                if would_scale:
+                    scaled_w, scaled_h = int(width * scale), int(height * scale)
+                    reasons.append(f"scale {scale}x → {scaled_w}x{scaled_h}")
+                if would_cap:
+                    reasons.append(f"exceeds max {max_res}")
+                warnings.append(f"Land texture detected - resize skipped ({', '.join(reasons)})")
+
         # N texture saved to format with unused alpha channel
         if not is_nh and not settings.get('auto_optimize_n_alpha', True):
             if target_format in ["BGRA", "BC3/DXT5"]:
@@ -587,6 +646,32 @@ class NormalMapProcessor:
             path_whitelist=whitelist,
             path_blacklist=blacklist
         )
+
+        # Load land texture exclusion list if provided
+        self.land_texture_stems: set[str] = set()
+        land_file = getattr(settings, 'land_texture_file', None)
+        if land_file:
+            try:
+                self.land_texture_stems = load_exclusion_list(Path(land_file))
+                print(f"Loaded {len(self.land_texture_stems)} land texture stems from {land_file}")
+            except Exception as e:
+                print(f"Warning: Could not load land texture file {land_file}: {e}")
+
+    def is_land_texture(self, file_path: Path) -> bool:
+        """Check if a file is a land texture (should be protected from resizing).
+
+        For normal maps, we check the base texture name (without _n/_nh suffix).
+        E.g., tx_sand_01_n.dds -> tx_sand_01 -> check if in land_texture_stems
+        """
+        if not self.land_texture_stems:
+            return False
+        stem = file_path.stem.lower()
+        # Remove _n or _nh suffix to get base texture name
+        if stem.endswith('_nh'):
+            stem = stem[:-3]
+        elif stem.endswith('_n'):
+            stem = stem[:-2]
+        return stem in self.land_texture_stems
 
     def find_normal_maps(self, input_dir: Path, track_filtered: bool = False) -> Tuple[List[Path], List[Path]]:
         """
@@ -673,7 +758,9 @@ class NormalMapProcessor:
             return []
 
         settings_dict = self.settings.to_dict()
-        self._settings_hash = hash(json.dumps(settings_dict, sort_keys=True))
+        # Add land texture stems for worker functions (must be set, not serialized in to_dict)
+        settings_dict['land_texture_stems'] = self.land_texture_stems
+        self._settings_hash = hash(json.dumps(settings_dict, sort_keys=True, default=str))
 
         # Use parallel for large file counts to benefit from I/O parallelism
         # (especially helpful when files are on slow storage)
@@ -695,7 +782,9 @@ class NormalMapProcessor:
                      progress_callback: Optional[Callable[[int, int, ProcessingResult], None]] = None) -> List[ProcessingResult]:
         """Process all normal maps and return results. Requires analysis to be run first."""
         settings_dict = self.settings.to_dict()
-        current_hash = hash(json.dumps(settings_dict, sort_keys=True))
+        # Add land texture stems for worker functions
+        settings_dict['land_texture_stems'] = self.land_texture_stems
+        current_hash = hash(json.dumps(settings_dict, sort_keys=True, default=str))
 
         if not self.analysis_cache or self._settings_hash != current_hash:
             raise RuntimeError(

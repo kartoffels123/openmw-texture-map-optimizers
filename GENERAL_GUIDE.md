@@ -10,8 +10,8 @@
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| Normal Map Optimizer | v0.13 | Specifically for normals as these usually need special recalculations |
-| Regular Texture Optimizer | v0.4 | Everything else |
+| Normal Map Optimizer | v0.15 | Specifically for normals as these usually need special recalculations |
+| Regular Texture Optimizer | v0.5 | Everything else |
 | MO2 Integrator | v0.1 | Integrates optimized textures into your Mod Organizer 2 setup |
 
 ---
@@ -42,7 +42,9 @@
    └── Mods_regular_maps_optimized/   <-- Output goes here
    ```
 3. **Change settings** as needed
-   - Most users only need: **Max Resolution Ceiling** and **Downscale Factor**
+   - **Max Resolution Ceiling** - limits texture size (default: 2048)
+   - **Downscale Factor** - reduces all textures (0.5 = half size)
+   - **Land Texture Exclusion List** - set to `POTI_2-1_land_textures.txt` to protect terrain textures
 4. **Dry Run and Analysis**
    - This may take a moment
    - Read the output — if you like the results, proceed; if not, go back to step 3
@@ -71,7 +73,10 @@
    └── Mods_normal_maps_optimized/   <-- Output goes here
    ```
 3. **Change settings** as needed
-   - Most users only need: **Max Resolution Ceiling**, **Downscale Factor**, and **"Allow well-compressed textures to passthrough"**
+   - **Max Resolution Ceiling** - limits texture size (default: 2048)
+   - **Downscale Factor** - reduces all textures (0.5 = half size)
+   - **Land Texture Exclusion List** - set to `POTI_2-1_land_textures.txt` to protect terrain textures
+   - **Allow well-compressed textures to passthrough** - skips already-optimized files
 4. **Dry Run and Analysis**
    - This may take a moment
    - Read the output — if you like the results, proceed; if not, go back to step 3

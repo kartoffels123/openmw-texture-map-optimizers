@@ -1,4 +1,4 @@
-# OpenMW Regular Texture Optimizer v0.4
+# OpenMW Regular Texture Optimizer v0.5
 
 A high-performance tool for optimizing and compressing regular (non-normal map) textures for OpenMW.
 
@@ -228,7 +228,13 @@ Alpha Optimization adds analysis time during dry run:
 
 ## Version History
 
-### Version 0.3 (Current)
+### Version 0.5 (Current)
+- **Land texture protection** - New filtering option to protect terrain/landscape textures from resizing while still applying compression and mipmap fixes
+- **Land texture scanner** - New CLI tool (`land_texture_scanner.py`) to extract LTEX records from ESP/ESM files and generate exclusion lists
+- **Sample exclusion lists** - Includes `POTI_2-1_land_textures.txt` (590 entries) covering vanilla + most popular mods
+- **Texture atlas min resolution** - Added configurable min resolution for atlas textures (default: 2048) alongside max resolution (default: 8192)
+
+### Version 0.4
 - **More filtering options** - Enhanced path filtering with additional configuration options
 
 ### Version 0.2

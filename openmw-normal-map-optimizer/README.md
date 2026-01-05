@@ -1,4 +1,4 @@
-# OpenMW Normal Map Optimizer v0.13
+# OpenMW Normal Map Optimizer v0.15
 
 A high-performance tool for optimizing, fixing, and compressing normal maps for OpenMW.
 
@@ -150,7 +150,15 @@ openmw-normal-map-optimizer/
 
 ## Version History
 
-### Version 0.12 (Current)
+### Version 0.15 (Current)
+- **Land texture protection** - New filtering option to protect terrain/landscape normal maps from resizing while still applying compression and mipmap fixes
+- **Sample exclusion lists** - Use `POTI_2-1_land_textures.txt` (590 entries) covering vanilla + most popular mods
+
+### Version 0.14
+- **Texture atlas min/max resolution** - Added configurable min resolution for atlas textures (default: 2048) alongside max resolution (default: 8192)
+- **Improved atlas settings UI** - Atlas resolution controls now match the Regular Map Optimizer layout
+
+### Version 0.13
 - **More filtering options** - Enhanced path filtering with additional configuration options
 
 ### Version 0.11

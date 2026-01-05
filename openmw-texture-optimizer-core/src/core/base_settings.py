@@ -89,3 +89,7 @@ class AnalysisResult:
 
     # Normal map specific (used by normal map optimizer)
     is_nh: bool = False  # True if this is an _nh (normal+height) texture
+
+    # Special texture types (atlas, land texture, etc.)
+    is_atlas: bool = False
+    is_land_texture: bool = False

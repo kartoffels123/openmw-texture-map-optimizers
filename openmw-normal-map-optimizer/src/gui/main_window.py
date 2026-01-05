@@ -75,6 +75,12 @@ class NormalMapProcessorGUI:
         self.atlas_min_resolution = tk.IntVar(value=2048)
         self.atlas_max_resolution = tk.IntVar(value=8192)
 
+        # Land texture settings
+        self.land_texture_file = tk.StringVar(value="")
+        self.resize_land_textures = tk.BooleanVar(value=False)
+        self.land_texture_min_resolution = tk.IntVar(value=2048)
+        self.land_texture_max_resolution = tk.IntVar(value=8192)
+
         # Power-of-2 enforcement
         self.enforce_power_of_2 = tk.BooleanVar(value=True)
 
@@ -97,6 +103,8 @@ class NormalMapProcessorGUI:
                     self.auto_fix_nh_to_n, self.auto_optimize_n_alpha, self.allow_compressed_passthrough,
                     self.copy_passthrough_files, self.enable_atlas_downscaling,
                     self.atlas_min_resolution, self.atlas_max_resolution,
+                    self.land_texture_file, self.resize_land_textures,
+                    self.land_texture_min_resolution, self.land_texture_max_resolution,
                     self.enforce_power_of_2, self.use_path_whitelist, self.use_path_blacklist,
                     self.use_aggressive_blacklist, self.custom_blacklist]:
             var.trace_add('write', self.invalidate_analysis_cache)
@@ -602,6 +610,43 @@ class NormalMapProcessorGUI:
                  text="Add additional path patterns to skip (e.g., 'mymod_backup, test_textures')",
                  font=("", 8)).pack(anchor="w")
 
+        # Land Texture Settings
+        frame_land = ttk.LabelFrame(scrollable, text="Land Texture Settings", padding=10)
+        frame_land.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_land,
+                 text="Land textures (LTEX) tile across terrain and should stay high-resolution.\n"
+                      "Generate an exclusion list using: python land_texture_scanner.py --mods <dir> -o list.txt",
+                 font=("", 8), wraplength=600, justify="left").pack(anchor="w", pady=(0, 5))
+
+        # File picker row
+        frame_land_file = ttk.Frame(frame_land)
+        frame_land_file.pack(fill="x", pady=(0, 5))
+        ttk.Label(frame_land_file, text="Exclusion list:").pack(side="left")
+        ttk.Entry(frame_land_file, textvariable=self.land_texture_file, width=40).pack(side="left", padx=(10, 5))
+        ttk.Button(frame_land_file, text="Browse...", command=self.browse_land_texture_file).pack(side="left")
+
+        ttk.Label(frame_land,
+                 text="Land textures will still be processed (compression, Z-reconstruction, mipmaps) but NOT resized by default.",
+                 font=("", 8), wraplength=600).pack(anchor="w", pady=(0, 5))
+
+        ttk.Checkbutton(frame_land, text="Enable resizing for land textures (uses custom limits below)",
+                       variable=self.resize_land_textures).pack(anchor="w")
+
+        frame_land_limits = ttk.Frame(frame_land)
+        frame_land_limits.pack(anchor="w", pady=(5, 0), padx=(20, 0))
+        ttk.Label(frame_land_limits, text="Min resolution:").pack(side="left")
+        ttk.Combobox(frame_land_limits, textvariable=self.land_texture_min_resolution,
+                    values=[128, 256, 512, 1024, 2048, 4096, 8192], state="readonly", width=8).pack(side="left", padx=(5, 15))
+        ttk.Label(frame_land_limits, text="Max resolution:").pack(side="left")
+        ttk.Combobox(frame_land_limits, textvariable=self.land_texture_max_resolution,
+                    values=[256, 512, 1024, 2048, 4096, 8192, 16384], state="readonly", width=8).pack(side="left", padx=(5, 0))
+
+        ttk.Label(frame_land,
+                 text="When enabled, follows the same rules as Downscaling Options (scale factor, power-of-2, etc.)\n"
+                      "but with these custom min/max limits instead of the global ones.",
+                 font=("", 8), foreground="gray").pack(anchor="w", padx=(20, 0))
+
     def _create_advanced_settings(self, parent):
         """Create advanced settings sub-tab"""
         main_container = ttk.Frame(parent)
@@ -826,6 +871,14 @@ class NormalMapProcessorGUI:
                       "but with these custom min/max limits instead of the global ones.",
                  font=("", 8), foreground="gray").grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
 
+    def browse_land_texture_file(self):
+        f = filedialog.askopenfilename(
+            title="Select Land Texture Exclusion List",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if f:
+            self.land_texture_file.set(f)
+
     def _create_process_tab(self, tab_process):
         """Create the processing tab with progress log and controls"""
         # Progress Bar
@@ -976,6 +1029,10 @@ class NormalMapProcessorGUI:
             enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
             atlas_min_resolution=self.atlas_min_resolution.get(),
             atlas_max_resolution=self.atlas_max_resolution.get(),
+            land_texture_file=self.land_texture_file.get() or None,
+            resize_land_textures=self.resize_land_textures.get(),
+            land_texture_min_resolution=self.land_texture_min_resolution.get(),
+            land_texture_max_resolution=self.land_texture_max_resolution.get(),
             enforce_power_of_2=self.enforce_power_of_2.get(),
             path_whitelist=whitelist,
             path_blacklist=blacklist,
@@ -1090,7 +1147,12 @@ class NormalMapProcessorGUI:
             # Count files
             n_count = sum(1 for r in results if not r.is_nh)
             nh_count = sum(1 for r in results if r.is_nh)
-            self.log(f"Found {len(results)} normal map files ({n_count} _n.dds, {nh_count} _nh.dds)\n")
+            land_count = sum(1 for r in results if r.is_land_texture)
+            atlas_count = sum(1 for r in results if r.is_atlas)
+            self.log(f"Found {len(results)} normal map files ({n_count} _n.dds, {nh_count} _nh.dds)")
+            if land_count > 0 or atlas_count > 0:
+                self.log(f"  Special textures: {land_count} land textures, {atlas_count} atlases")
+            self.log("")
 
             # Analyze results
             total_current_size = sum(r.file_size for r in results)

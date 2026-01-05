@@ -610,6 +610,8 @@ def _analyze_file_worker(args):
         )
         result.new_width = new_width
         result.new_height = new_height
+        result.is_atlas = is_atlas
+        result.is_land_texture = is_land_tex
         will_resize = (new_width != result.width) or (new_height != result.height)
 
         # === STEP 1: Handle compressed textures (BC1/BC2/BC3) ===
@@ -687,6 +689,29 @@ def _analyze_file_worker(args):
         elif result.mipmap_count == 1 and max(result.width, result.height) > 4:
             result.warnings.append("Missing mipmaps - will regenerate")
 
+        # Texture atlas detected
+        if is_atlas and result.width > 0 and result.height > 0:
+            max_dim = max(result.width, result.height)
+            max_resolution = settings.get('max_resolution', 2048)
+            if max_resolution > 0 and max_dim > max_resolution:
+                result.warnings.append(f"Texture atlas detected - resize skipped despite size {result.width}x{result.height} exceeding max resolution")
+
+        # Land texture detected - explain what resize was skipped
+        if is_land_tex and result.width > 0 and result.height > 0:
+            scale = settings.get('scale_factor', 1.0)
+            max_res = settings.get('max_resolution', 0)
+            would_scale = scale != 1.0 and scale < 1.0
+            would_cap = max_res > 0 and max(result.width, result.height) > max_res
+
+            if would_scale or would_cap:
+                reasons = []
+                if would_scale:
+                    scaled_w, scaled_h = int(result.width * scale), int(result.height * scale)
+                    reasons.append(f"scale {scale}x → {scaled_w}x{scaled_h}")
+                if would_cap:
+                    reasons.append(f"exceeds max {max_res}")
+                result.warnings.append(f"Land texture detected - resize skipped ({', '.join(reasons)})")
+
         # === STEP 5: Estimate output size ===
         mipmap_factor = 1.0 if skip_mipmaps else 1.33
         num_pixels = new_width * new_height * mipmap_factor
@@ -733,8 +758,11 @@ class RegularTextureProcessor:
         if land_file:
             try:
                 self.land_texture_stems = load_exclusion_list(Path(land_file))
+                print(f"Loaded {len(self.land_texture_stems)} land texture stems from {land_file}")
             except Exception as e:
                 print(f"Warning: Failed to load land texture exclusion list: {e}")
+        else:
+            print("Note: No land texture exclusion list configured")
 
     def is_land_texture(self, file_path: Path) -> bool:
         """Check if a file is a land texture based on the loaded exclusion list."""
