@@ -58,6 +58,7 @@ _dds_parser = _import_shared_module("dds_parser")
 _file_scanner = _import_shared_module("file_scanner")
 _base_settings = _import_shared_module("base_settings")
 _utils = _import_shared_module("utils")
+_land_texture_scanner = _import_shared_module("land_texture_scanner")
 
 # Re-export DDS parser functions
 parse_dds_header = _dds_parser.parse_dds_header
@@ -86,6 +87,9 @@ is_texture_atlas = _utils.is_texture_atlas
 calculate_new_dimensions = _utils.calculate_new_dimensions
 FORMAT_MAP = _utils.FORMAT_MAP
 FILTER_MAP = _utils.FILTER_MAP
+
+# Re-export land texture scanner
+load_exclusion_list = _land_texture_scanner.load_exclusion_list
 
 # Get tool paths - pass the optimizer's root directory
 # This file is at: openmw-regular-map-optimizer/src/core/regular_processor.py
@@ -356,7 +360,15 @@ def _process_texture_static(input_path: Path, output_path: Path, settings: dict,
                     has_alpha = False
 
             orig_width, orig_height = dimensions
-            new_width, new_height = calculate_new_dimensions(orig_width, orig_height, settings, input_path)
+
+            # Check for atlas and land texture protection
+            is_atlas = is_texture_atlas(input_path)
+            land_texture_stems = set(settings.get('land_texture_stems', []))
+            is_land_tex = input_path.stem.lower() in land_texture_stems
+
+            new_width, new_height = calculate_new_dimensions(
+                orig_width, orig_height, settings, is_atlas=is_atlas, is_land_texture=is_land_tex
+            )
             will_resize = (new_width != orig_width) or (new_height != orig_height)
 
             # === Determine target format (fallback logic) ===
@@ -586,10 +598,15 @@ def _analyze_file_worker(args):
                     result.has_alpha = False
                     # Note: actual target format determined later (BC1 for normal size, BGR for small)
 
-        # Calculate new dimensions (handles atlas protection, max/min resolution)
+        # Calculate new dimensions (handles atlas protection, land texture protection, max/min resolution)
         is_atlas = is_texture_atlas(input_file)
+
+        # Check if this is a land texture (from loaded exclusion list)
+        land_texture_stems = set(settings.get('land_texture_stems', []))
+        is_land_tex = input_file.stem.lower() in land_texture_stems
+
         new_width, new_height = calculate_new_dimensions(
-            result.width, result.height, settings, is_atlas=is_atlas
+            result.width, result.height, settings, is_atlas=is_atlas, is_land_texture=is_land_tex
         )
         result.new_width = new_width
         result.new_height = new_height
@@ -710,6 +727,21 @@ class RegularTextureProcessor:
             path_blacklist=blacklist
         )
 
+        # Load land texture exclusion list if specified
+        self.land_texture_stems: set[str] = set()
+        land_file = getattr(settings, 'land_texture_file', None)
+        if land_file:
+            try:
+                self.land_texture_stems = load_exclusion_list(Path(land_file))
+            except Exception as e:
+                print(f"Warning: Failed to load land texture exclusion list: {e}")
+
+    def is_land_texture(self, file_path: Path) -> bool:
+        """Check if a file is a land texture based on the loaded exclusion list."""
+        if not self.land_texture_stems:
+            return False
+        return file_path.stem.lower() in self.land_texture_stems
+
     def find_textures(self, input_dir: Path, track_filtered: bool = False) -> List[Path]:
         """
         Find all regular texture files in directory.
@@ -825,6 +857,9 @@ class RegularTextureProcessor:
 
         settings_dict = self.settings.to_dict()
 
+        # Add land texture stems to settings dict for workers (convert set to list for pickling)
+        settings_dict['land_texture_stems'] = list(self.land_texture_stems)
+
         # Store settings hash
         import json
         self._settings_hash = hash(json.dumps(settings_dict, sort_keys=True))
@@ -896,6 +931,10 @@ class RegularTextureProcessor:
         """Process all textures and return results."""
         import json
         settings_dict = self.settings.to_dict()
+
+        # Add land texture stems for fallback processing path
+        settings_dict['land_texture_stems'] = list(self.land_texture_stems)
+
         current_hash = hash(json.dumps(settings_dict, sort_keys=True))
 
         if not self.analysis_cache or self._settings_hash != current_hash:

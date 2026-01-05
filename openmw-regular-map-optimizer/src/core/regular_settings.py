@@ -123,6 +123,15 @@ class RegularSettings(BaseProcessingSettings):
     uniform_weighting: bool = False  # Default OFF for regular textures
     use_dithering: bool = False      # Default OFF for regular textures
 
+    # Land texture handling
+    # Land textures (LTEX) tile across terrain and should stay high-resolution
+    # Use land_texture_scanner.py to generate the exclusion list from ESP/ESM files
+    land_texture_file: str = None  # Path to txt file with land texture stems
+    # Land textures are still processed (compression, alpha, mipmaps) but NOT resized by default
+    resize_land_textures: bool = False  # If False, skip resizing. If True, use custom limits
+    land_texture_min_resolution: int = 2048  # Floor - don't go below this (only if resize enabled)
+    land_texture_max_resolution: int = 8192  # Ceiling - don't go above this (only if resize enabled)
+
     def __post_init__(self):
         """Set default lists after initialization"""
         if self.path_whitelist is None:
@@ -152,5 +161,9 @@ class RegularSettings(BaseProcessingSettings):
             'optimize_unused_alpha': self.optimize_unused_alpha,
             'alpha_threshold': self.alpha_threshold,
             'analysis_chunk_size': self.analysis_chunk_size,
+            'land_texture_file': self.land_texture_file,
+            'resize_land_textures': self.resize_land_textures,
+            'land_texture_min_resolution': self.land_texture_min_resolution,
+            'land_texture_max_resolution': self.land_texture_max_resolution,
         })
         return base_dict

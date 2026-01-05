@@ -25,7 +25,8 @@ class BaseProcessingSettings:
 
     # Atlas handling
     enable_atlas_downscaling: bool = False
-    atlas_max_resolution: int = 4096
+    atlas_min_resolution: int = 2048
+    atlas_max_resolution: int = 8192
 
     # Performance settings
     enable_parallel: bool = True

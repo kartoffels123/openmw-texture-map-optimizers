@@ -59,7 +59,8 @@ def load_settings_from_dict(settings_dict):
         auto_optimize_n_alpha=settings_dict.get('auto_optimize_n_alpha', True),
         allow_compressed_passthrough=settings_dict.get('allow_compressed_passthrough', False),
         enable_atlas_downscaling=settings_dict.get('enable_atlas_downscaling', False),
-        atlas_max_resolution=settings_dict.get('atlas_max_resolution', 4096)
+        atlas_min_resolution=settings_dict.get('atlas_min_resolution', 2048),
+        atlas_max_resolution=settings_dict.get('atlas_max_resolution', 8192)
     )
 
 

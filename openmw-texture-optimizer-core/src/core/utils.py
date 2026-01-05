@@ -161,7 +161,8 @@ def calculate_new_dimensions(
     orig_height: int,
     settings: dict,
     file_path: Path = None,
-    is_atlas: bool = False
+    is_atlas: bool = False,
+    is_land_texture: bool = False
 ) -> Tuple[int, int]:
     """
     Calculate new dimensions based on scale factor and constraints.
@@ -170,9 +171,11 @@ def calculate_new_dimensions(
         orig_width: Original texture width
         orig_height: Original texture height
         settings: Dict containing scale_factor, max_resolution, min_resolution,
-                  enable_atlas_downscaling, atlas_max_resolution, enforce_power_of_2
+                  enable_atlas_downscaling, atlas_max_resolution, enforce_power_of_2,
+                  resize_land_textures, land_texture_min_resolution, land_texture_max_resolution
         file_path: Optional path for atlas auto-detection (prefer is_atlas flag)
         is_atlas: Whether this is a texture atlas (if True, overrides file_path check)
+        is_land_texture: Whether this is a land/terrain texture (LTEX)
 
     Returns:
         Tuple of (new_width, new_height)
@@ -194,8 +197,56 @@ def calculate_new_dimensions(
     if is_atlas and not settings.get('enable_atlas_downscaling', False):
         return new_width, new_height
 
+    # Skip resizing for land textures (unless explicitly enabled)
+    # Land textures tile across terrain and should stay high-resolution
+    if is_land_texture and not settings.get('resize_land_textures', False):
+        return new_width, new_height
+
+    # Use land texture-specific limits if this is a land texture with resizing enabled
+    if is_land_texture and settings.get('resize_land_textures', False):
+        min_res = settings.get('land_texture_min_resolution', 2048)
+        max_res = settings.get('land_texture_max_resolution', 8192)
+        scale = settings.get('scale_factor', 1.0)
+
+        # Apply scale factor
+        if scale != 1.0:
+            new_width = int(orig_width * scale)
+            new_height = int(orig_height * scale)
+            new_width = max(1, new_width)
+            new_height = max(1, new_height)
+
+        # Enforce land texture floor (don't go below min)
+        if min_res > 0:
+            if new_width < min_res or new_height < min_res:
+                new_width = orig_width
+                new_height = orig_height
+
+        # Enforce land texture ceiling (don't go above max)
+        if max_res > 0:
+            max_dim = max(new_width, new_height)
+            if max_dim > max_res and max_dim > 0:
+                scale_factor = max_res / max_dim
+                new_width = int(new_width * scale_factor)
+                new_height = int(new_height * scale_factor)
+                new_width = max(1, new_width)
+                new_height = max(1, new_height)
+
+        # Enforce power of 2 if requested
+        if settings.get('enforce_power_of_2', False):
+            new_width = _round_down_to_power_of_2(new_width)
+            new_height = _round_down_to_power_of_2(new_height)
+
+        return new_width, new_height
+
     scale = settings.get('scale_factor', 1.0)
-    min_res = settings.get('min_resolution', 0)
+
+    # Use atlas-specific limits if this is an atlas with downscaling enabled
+    if is_atlas and settings.get('enable_atlas_downscaling', False):
+        min_res = settings.get('atlas_min_resolution', 2048)
+        max_res = settings.get('atlas_max_resolution', 8192)
+    else:
+        min_res = settings.get('min_resolution', 0)
+        max_res = settings.get('max_resolution', 0)
 
     # Apply scale factor, but respect min_resolution as a floor
     if scale != 1.0:
@@ -213,8 +264,7 @@ def calculate_new_dimensions(
         new_width = max(1, new_width)
         new_height = max(1, new_height)
 
-    # Use atlas-specific max resolution if this is an atlas
-    max_res = settings.get('atlas_max_resolution', 4096) if is_atlas else settings.get('max_resolution', 0)
+    # Apply max resolution ceiling
     if max_res > 0:
         max_dim = max(new_width, new_height)
         if max_dim > max_res and max_dim > 0:

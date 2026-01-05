@@ -1,0 +1,37 @@
+# Land Texture Exclusion List - SAMPLE
+#
+# This is a sample file showing the format for land texture exclusion lists.
+# Generate your own list by running:
+#
+#   python land_texture_scanner.py --mods "D:/MO2/mods" --output land_textures.txt
+#
+# Then pass the generated file to the texture optimizers as indicated by the GUI.
+#
+#   
+#
+# Format: One texture stem per line (filename without extension)
+# Lines starting with # are comments and ignored
+# Matching is case-insensitive
+#
+# Example entries:
+
+tx_ac_dirt_01
+tx_ac_dirt_grass_01
+tx_ac_dirt_grass_02
+tx_ac_dirtroad_01
+tx_ac_rock_01
+tx_ac_scrubplain_01
+tx_ac_scrubplain_02
+tx_ai_clover_02
+tx_ai_dirt_01
+tx_ai_dirtroad_01
+tx_ai_grass_01
+tx_ai_grass_dirt_01
+tx_ai_mainroad_01
+tx_ai_mudflats_01
+tx_ai_tilled_dirt_01
+tx_ashlands_04
+tx_ashlands_06
+tx_ashlands_07
+tx_ashlands_08
+tx_ashlands_road_01

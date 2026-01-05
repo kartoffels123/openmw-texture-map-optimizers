@@ -78,7 +78,12 @@ class RegularTextureProcessorGUI:
         self.use_no_mipmap_paths = tk.BooleanVar(value=True)
         self.exclude_normal_maps = tk.BooleanVar(value=True)
         self.enable_atlas_downscaling = tk.BooleanVar(value=False)
+        self.atlas_min_resolution = tk.IntVar(value=2048)
         self.atlas_max_resolution = tk.IntVar(value=8192)
+        self.land_texture_file = tk.StringVar(value="")
+        self.resize_land_textures = tk.BooleanVar(value=False)  # False = don't resize, True = use custom limits
+        self.land_texture_min_resolution = tk.IntVar(value=2048)
+        self.land_texture_max_resolution = tk.IntVar(value=8192)
         self.optimize_unused_alpha = tk.BooleanVar(value=True)  # Default ON - recommended
         self.alpha_threshold = tk.IntVar(value=255)
         self.analysis_chunk_size = tk.IntVar(value=100)  # Chunk size for parallel alpha analysis
@@ -91,10 +96,13 @@ class RegularTextureProcessorGUI:
                     self.use_dithering, self.use_small_texture_override,
                     self.small_texture_threshold, self.allow_well_compressed_passthrough,
                     self.preserve_compressed_format, self.enable_atlas_downscaling,
-                    self.atlas_max_resolution, self.enforce_power_of_2, self.use_path_whitelist,
+                    self.atlas_min_resolution, self.atlas_max_resolution,
+                    self.enforce_power_of_2, self.use_path_whitelist,
                     self.use_path_blacklist, self.use_aggressive_blacklist, self.custom_blacklist,
                     self.enable_tga_support, self.copy_passthrough_files, self.use_no_mipmap_paths,
-                    self.exclude_normal_maps, self.optimize_unused_alpha]:
+                    self.exclude_normal_maps, self.optimize_unused_alpha,
+                    self.land_texture_file, self.resize_land_textures,
+                    self.land_texture_min_resolution, self.land_texture_max_resolution]:
             var.trace_add('write', self.invalidate_analysis_cache)
 
     def create_widgets(self):
@@ -375,14 +383,19 @@ class RegularTextureProcessorGUI:
                       "Downscaling reduces detail for all packed textures.",
                  font=("", 8), wraplength=600, justify="left", foreground="red").pack(anchor="w", padx=(20, 0))
 
-        frame_atlas_max = ttk.Frame(frame_atlas)
-        frame_atlas_max.pack(anchor="w", pady=(5, 0))
-        ttk.Label(frame_atlas_max, text="Max resolution for atlases:").pack(side="left")
-        ttk.Combobox(frame_atlas_max, textvariable=self.atlas_max_resolution,
-                    values=[1024, 2048, 4096, 8192, 16384], state="readonly", width=10).pack(side="left", padx=(10, 0))
+        frame_atlas_limits = ttk.Frame(frame_atlas)
+        frame_atlas_limits.pack(anchor="w", pady=(5, 0), padx=(20, 0))
+        ttk.Label(frame_atlas_limits, text="Min resolution:").pack(side="left")
+        ttk.Combobox(frame_atlas_limits, textvariable=self.atlas_min_resolution,
+                    values=[128, 256, 512, 1024, 2048, 4096, 8192], state="readonly", width=8).pack(side="left", padx=(5, 15))
+        ttk.Label(frame_atlas_limits, text="Max resolution:").pack(side="left")
+        ttk.Combobox(frame_atlas_limits, textvariable=self.atlas_max_resolution,
+                    values=[256, 512, 1024, 2048, 4096, 8192, 16384], state="readonly", width=8).pack(side="left", padx=(5, 0))
+
         ttk.Label(frame_atlas,
-                 text="Only applies if 'Enable downscaling for texture atlases' is checked. Default: 4096",
-                 font=("", 8)).pack(anchor="w", padx=(20, 0))
+                 text="When enabled, follows the same rules as Downscaling Options (scale factor, power-of-2, etc.)\n"
+                      "but with these custom min/max limits instead of the global ones.",
+                 font=("", 8), foreground="gray").pack(anchor="w", padx=(20, 0))
 
         # TGA
         frame_tga = ttk.LabelFrame(scrollable, text="TGA Support", padding=10)
@@ -468,6 +481,43 @@ class RegularTextureProcessorGUI:
         ttk.Label(frame_nomip, text="These files are displayed at 1:1 scale (no mipmaps needed)",
                  font=("", 8)).pack(anchor="w")
 
+        # Land Texture Settings
+        frame_land = ttk.LabelFrame(scrollable, text="Land Texture Settings", padding=10)
+        frame_land.pack(fill="x", padx=10, pady=5)
+
+        ttk.Label(frame_land,
+                 text="Land textures (LTEX) tile across terrain and should stay high-resolution.\n"
+                      "Generate an exclusion list using: python land_texture_scanner.py --mods <dir> -o list.txt",
+                 font=("", 8), wraplength=600, justify="left").pack(anchor="w", pady=(0, 5))
+
+        # File picker row
+        frame_land_file = ttk.Frame(frame_land)
+        frame_land_file.pack(fill="x", pady=(0, 5))
+        ttk.Label(frame_land_file, text="Exclusion list:").pack(side="left")
+        ttk.Entry(frame_land_file, textvariable=self.land_texture_file, width=40).pack(side="left", padx=(10, 5))
+        ttk.Button(frame_land_file, text="Browse...", command=self.browse_land_texture_file).pack(side="left")
+
+        ttk.Label(frame_land,
+                 text="Land textures will still be processed (compression, alpha, mipmaps) but NOT resized by default.",
+                 font=("", 8), wraplength=600).pack(anchor="w", pady=(0, 5))
+
+        ttk.Checkbutton(frame_land, text="Enable resizing for land textures (uses custom limits below)",
+                       variable=self.resize_land_textures).pack(anchor="w")
+
+        frame_land_limits = ttk.Frame(frame_land)
+        frame_land_limits.pack(anchor="w", pady=(5, 0), padx=(20, 0))
+        ttk.Label(frame_land_limits, text="Min resolution:").pack(side="left")
+        ttk.Combobox(frame_land_limits, textvariable=self.land_texture_min_resolution,
+                    values=[128, 256, 512, 1024, 2048, 4096, 8192], state="readonly", width=8).pack(side="left", padx=(5, 15))
+        ttk.Label(frame_land_limits, text="Max resolution:").pack(side="left")
+        ttk.Combobox(frame_land_limits, textvariable=self.land_texture_max_resolution,
+                    values=[256, 512, 1024, 2048, 4096, 8192, 16384], state="readonly", width=8).pack(side="left", padx=(5, 0))
+
+        ttk.Label(frame_land,
+                 text="When enabled, follows the same rules as Downscaling Options (scale factor, power-of-2, etc.)\n"
+                      "but with these custom min/max limits instead of the global ones.",
+                 font=("", 8), foreground="gray").pack(anchor="w", padx=(20, 0))
+
     def _create_process_tab(self, parent):
         """Create processing tab"""
         frame_progress = ttk.LabelFrame(parent, text="Progress", padding=10)
@@ -510,6 +560,14 @@ class RegularTextureProcessorGUI:
         d = filedialog.askdirectory(title="Select Output Directory")
         if d:
             self.output_dir.set(d)
+
+    def browse_land_texture_file(self):
+        f = filedialog.askopenfilename(
+            title="Select Land Texture Exclusion List",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
+        )
+        if f:
+            self.land_texture_file.set(f)
 
     def log(self, message):
         self.log_text.configure(state="normal")
@@ -661,6 +719,7 @@ class RegularTextureProcessorGUI:
             use_small_texture_override=self.use_small_texture_override.get(),
             enforce_power_of_2=self.enforce_power_of_2.get(),
             enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
+            atlas_min_resolution=self.atlas_min_resolution.get(),
             atlas_max_resolution=self.atlas_max_resolution.get(),
             allow_well_compressed_passthrough=self.allow_well_compressed_passthrough.get(),
             preserve_compressed_format=self.preserve_compressed_format.get(),
@@ -670,6 +729,10 @@ class RegularTextureProcessorGUI:
             optimize_unused_alpha=self.optimize_unused_alpha.get(),
             alpha_threshold=self.alpha_threshold.get(),
             analysis_chunk_size=self.analysis_chunk_size.get(),
+            land_texture_file=self.land_texture_file.get() or None,
+            resize_land_textures=self.resize_land_textures.get(),
+            land_texture_min_resolution=self.land_texture_min_resolution.get(),
+            land_texture_max_resolution=self.land_texture_max_resolution.get(),
         )
         settings.path_whitelist = whitelist
         settings.path_blacklist = blacklist
@@ -809,6 +872,7 @@ class RegularTextureProcessorGUI:
             # Track alpha optimization by original format
             alpha_optimization_stats = {}  # e.g., {'BC3/DXT5': 5, 'TGA_RGBA': 3}
             oversized_textures = []
+            land_texture_protected = []  # Land textures that were protected from resizing
 
             for r in results:
                 if r.error:
@@ -844,6 +908,13 @@ class RegularTextureProcessorGUI:
                     # Track if it will actually be resized (accounts for atlas protection)
                     will_be_resized = (r.new_width != r.width) or (r.new_height != r.height)
                     oversized_textures.append((r.relative_path, r.width, r.height, will_be_resized))
+
+                # Track land textures that were protected from resizing
+                if self.processor and self.processor.land_texture_stems:
+                    file_stem = Path(r.relative_path).stem.lower()
+                    if file_stem in self.processor.land_texture_stems:
+                        was_protected = (r.new_width == r.width) and (r.new_height == r.height)
+                        land_texture_protected.append((r.relative_path, r.width, r.height, was_protected))
 
                 # Track no-mipmap files from warnings
                 for warning in (r.warnings or []):
@@ -1037,6 +1108,16 @@ class RegularTextureProcessorGUI:
                             self.log(f"      - {path} ({w}x{h})")
                         if len(wont_fix) > 3:
                             self.log(f"      ... and {len(wont_fix) - 3} more")
+
+                # Land texture protection display
+                if land_texture_protected:
+                    protected = [t for t in land_texture_protected if t[3]]  # t[3] = was_protected
+                    if protected:
+                        self.log(f"\n[i] Land textures: {len(protected)} texture(s) protected from resizing (terrain/landscape)")
+                        for path, w, h, _ in protected[:3]:
+                            self.log(f"      - {path} ({w}x{h})")
+                        if len(protected) > 3:
+                            self.log(f"      ... and {len(protected) - 3} more")
 
             # Alpha Analysis Section (always show if DXT1a found or alpha optimization enabled)
             has_alpha_info = action_groups['dxt1a'] or action_groups['alpha_optimized']

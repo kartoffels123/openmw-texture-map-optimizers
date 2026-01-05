@@ -72,7 +72,8 @@ class NormalMapProcessorGUI:
 
         # Atlas settings
         self.enable_atlas_downscaling = tk.BooleanVar(value=False)
-        self.atlas_max_resolution = tk.IntVar(value=4096)
+        self.atlas_min_resolution = tk.IntVar(value=2048)
+        self.atlas_max_resolution = tk.IntVar(value=8192)
 
         # Power-of-2 enforcement
         self.enforce_power_of_2 = tk.BooleanVar(value=True)
@@ -94,7 +95,8 @@ class NormalMapProcessorGUI:
                     self.uniform_weighting, self.use_dithering, self.use_small_texture_override,
                     self.small_nh_threshold, self.small_n_threshold, self.preserve_compressed_format,
                     self.auto_fix_nh_to_n, self.auto_optimize_n_alpha, self.allow_compressed_passthrough,
-                    self.copy_passthrough_files, self.enable_atlas_downscaling, self.atlas_max_resolution,
+                    self.copy_passthrough_files, self.enable_atlas_downscaling,
+                    self.atlas_min_resolution, self.atlas_max_resolution,
                     self.enforce_power_of_2, self.use_path_whitelist, self.use_path_blacklist,
                     self.use_aggressive_blacklist, self.custom_blacklist]:
             var.trace_add('write', self.invalidate_analysis_cache)
@@ -811,14 +813,18 @@ class NormalMapProcessorGUI:
                  text="⚠ Atlases are large for a reason - they pack many smaller textures into one file. Downscaling reduces detail for all packed textures.",
                  font=("", 8), wraplength=600, justify="left", foreground="red").grid(row=2, column=0, columnspan=3, sticky="w", pady=2)
 
-        ttk.Label(frame_atlas, text="Max resolution for atlases:", font=("", 9)).grid(row=3, column=0, sticky="w", padx=(0, 10), pady=5)
-        atlas_max_combo = ttk.Combobox(frame_atlas, textvariable=self.atlas_max_resolution,
-                                       values=[1024, 2048, 4096, 8192, 16384],
-                                       state="readonly", width=15)
-        atlas_max_combo.grid(row=3, column=1, sticky="w", pady=5)
+        frame_atlas_limits = ttk.Frame(frame_atlas)
+        frame_atlas_limits.grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
+        ttk.Label(frame_atlas_limits, text="Min resolution:").pack(side="left")
+        ttk.Combobox(frame_atlas_limits, textvariable=self.atlas_min_resolution,
+                    values=[128, 256, 512, 1024, 2048, 4096, 8192], state="readonly", width=8).pack(side="left", padx=(5, 15))
+        ttk.Label(frame_atlas_limits, text="Max resolution:").pack(side="left")
+        ttk.Combobox(frame_atlas_limits, textvariable=self.atlas_max_resolution,
+                    values=[256, 512, 1024, 2048, 4096, 8192, 16384], state="readonly", width=8).pack(side="left", padx=(5, 0))
         ttk.Label(frame_atlas,
-                 text="Only applies if 'Enable downscaling for texture atlases' is checked. Default: 4096",
-                 font=("", 8), wraplength=600, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
+                 text="When enabled, follows the same rules as Downscaling Options (scale factor, power-of-2, etc.)\n"
+                      "but with these custom min/max limits instead of the global ones.",
+                 font=("", 8), foreground="gray").grid(row=4, column=0, columnspan=3, sticky="w", pady=2)
 
     def _create_process_tab(self, tab_process):
         """Create the processing tab with progress log and controls"""
@@ -968,6 +974,7 @@ class NormalMapProcessorGUI:
             allow_compressed_passthrough=self.allow_compressed_passthrough.get(),
             copy_passthrough_files=self.copy_passthrough_files.get(),
             enable_atlas_downscaling=self.enable_atlas_downscaling.get(),
+            atlas_min_resolution=self.atlas_min_resolution.get(),
             atlas_max_resolution=self.atlas_max_resolution.get(),
             enforce_power_of_2=self.enforce_power_of_2.get(),
             path_whitelist=whitelist,
